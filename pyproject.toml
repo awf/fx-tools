@@ -1,0 +1,12 @@
+# pyproject.toml
+[tool.pytest.ini_options]
+minversion = "6.0"
+# addopts = "-ra -q"
+testpaths = [
+    ".",
+]
+python_files = [
+    "vjp_rules.py",
+    "diffx.py",
+    "test_difffx.py"
+]

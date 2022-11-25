@@ -64,7 +64,7 @@ def test_matmul():
         operator.matmul, matmul_fwd, matmul_bwd, (torch.randn(3, 4), torch.randn(4, 5))
     )
 
-
+# Add
 def add_fwd(A, B):
     return A + B, None
 
@@ -77,6 +77,16 @@ def test_add():
     vjp_check_fwdbwd(
         operator.add, add_fwd, add_bwd, (torch.randn(3, 4), torch.randn(3, 4))
     )
+
+# Sin
+def sin_fwd(x):
+    return (torch.sin(x), x)
+
+def sin_bwd(aux_is_x,dret): 
+    return torch.cos(aux_is_x) * dret
+
+def test_sin():
+    vjp_check_fwdbwd(torch.sin, sin_fwd, sin_bwd, (torch.randn(3, 4),))
 
 
 # Relu forward pass - save sign(x), could save as uint8 if we wanted to save memory
@@ -92,6 +102,7 @@ def test_relu():
     vjp_check_fwdbwd(torch.relu, relu_fwd, relu_bwd, (torch.randn(3, 4),))
 
 
+# Neg
 def neg_fwd(x):
     return -x, None
 
@@ -103,7 +114,7 @@ def neg_bwd(aux, dret):
 def test_neg():
     vjp_check_fwdbwd(torch.neg, neg_fwd, neg_bwd, (torch.randn(3, 4),))
 
-
+# Trace
 def trace_fwd(x):
     return torch.trace(x), x.shape
 
@@ -116,6 +127,7 @@ def test_trace():
     vjp_check_fwdbwd(torch.trace, trace_fwd, trace_bwd, (torch.randn(3, 3),))
 
 
+# Diag
 def diag_fwd(x):
     return torch.diag(x), x.shape
 
@@ -126,3 +138,28 @@ def diag_bwd(shape, dret):
 
 def test_diag():
     vjp_check_fwdbwd(torch.diag, diag_fwd, diag_bwd, (torch.randn(3, 3),))
+
+
+# transpose
+def transpose(x):
+    return torch.transpose(x,0,1)
+
+def transpose_fwd(x):
+    return transpose(x), None
+
+def transpose_bwd(aux, dret):
+    return transpose(dret)
+
+def test_transpose():
+    vjp_check_fwdbwd(transpose, transpose_fwd, transpose_bwd, (torch.randn(3, 5),))
+
+# def transpose_fwd(x,m,n):
+#     return torch.transpose(x,m,n), (m,n)
+
+
+# def transpose_bwd(aux, dret):
+#     m,n = aux
+#     return (torch.transpose(dret, m,n), None, None)
+
+
+  
