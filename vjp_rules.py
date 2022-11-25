@@ -43,6 +43,9 @@ def test_mul():
     vjp_check_fwdbwd(
         operator.mul, mul_fwd, mul_bwd, (torch.randn(3, 4), torch.randn(3, 4))
     )
+    vjp_check_fwdbwd(
+        operator.mul, mul_fwd, mul_bwd, (torch.tensor(2.2), torch.randn(3, 4))
+    )
 
 
 def matmul_fwd(A, B):

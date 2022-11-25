@@ -8,5 +8,6 @@ testpaths = [
 python_files = [
     "vjp_rules.py",
     "diffx.py",
-    "test_difffx.py"
+    "test_difffx.py",
+    "fx_shape.py"
 ]

@@ -1,30 +1,13 @@
 from typing import Any
+from collections import defaultdict
 import torch.fx.passes
 
-class AnnotatingInterpreter(torch.fx.Interpreter):
-    """
-    An FX Interpreter that attaches the original FX node to proxies.
+from fx_shape import AnnotatingInterpreter,fx_add_shapes
 
-    This allows annotations left by previous passes to be picked up, for example shapes
-    """
-    def run_node(self, n):
-        val = super().run_node(n)
-        val.fxi_node = n # Attach node to val
-        return val
-
-def fx_add_shapes(f_trace : torch.fx.GraphModule, sample_input : Any):
-    """
-    Run shape propagation on graph `f_trace`, which will add shape metadata in place.
-    """
-    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(sample_input)
-
-def fx_shape(x):
-    """
-    Return the shape of FX Proxy x.
-
-    Assumes that ShapeProp has been run on the graph, so that x.fsi_node is set
-    """
-    return x.fxi_node.meta['tensor_meta'].shape
+def ensure_tuple(x):
+    if isinstance(x, tuple):
+        return x
+    return (x,)
 
 
 # ----------------
@@ -139,30 +122,16 @@ def vjp_linear(f):
 
 import operator
 ad_map[operator.neg] = vjp_linear(operator.neg)
-ad_map[operator.add] = (vjp_rules.add_fwd, vjp_rules.add_bwd),
-ad_map[operator.mul] = (vjp_rules.mul_fwd, vjp_rules.mul_bwd),
-ad_map[operator.matmul] = (vjp_rules.matmul_fwd, vjp_rules.matmul_bwd),
-ad_map[torch.neg] = vjp_linear(torch.neg),
-ad_map[torch.sin] = {vjp_rules.sin_fwd, vjp_rules.sin_bwd},
-ad_map[torch.relu] = (vjp_rules.relu_fwd, vjp_rules.relu_bwd),
-ad_map[torch.transpose] = (vjp_rules.transpose_fwd, vjp_rules.transpose_bwd),
-ad_map[torch.diag] = (vjp_rules.diag_fwd, vjp_rules.diag_bwd),
-ad_map[vjp_rules.scale] = (vjp_rules.scale_fwd, vjp_rules.scale_bwd),
-
-# Custom pass for trace (as we needed to use fx_shape)
-def fx_trace_fwd(x):
-    assert len(fx_shape(x)) == 2
-    return torch.trace(x), fx_shape(x)
-ad_map[torch.trace] = (fx_trace_fwd, vjp_rules.trace_bwd)
-
-# And let's add some shape checking to add and mul, as we have it...
-def fx_add_fwd(A,B):
-    assert fx_shape(A) == fx_shape(B)
-    return vjp_rules.add_fwd(A,B)
-ad_map[operator.add] = (fx_add_fwd, vjp_rules.add_bwd)
-
-def fx_mul_fwd(A,B):
-    assert fx_shape(A) == fx_shape(B)
-    return vjp_rules.mul_fwd(A,B)
-ad_map[operator.mul] = (fx_mul_fwd, vjp_rules.mul_bwd)
+ad_map[operator.add] = (vjp_rules.add_fwd, vjp_rules.add_bwd)
+ad_map[operator.mul] = (vjp_rules.mul_fwd, vjp_rules.mul_bwd)
+ad_map[operator.matmul] = (vjp_rules.matmul_fwd, vjp_rules.matmul_bwd)
+ad_map[torch.neg] = vjp_linear(torch.neg)
+ad_map[torch.sin] = {vjp_rules.sin_fwd, vjp_rules.sin_bwd}
+ad_map[torch.relu] = (vjp_rules.relu_fwd, vjp_rules.relu_bwd)
+ad_map[torch.transpose] = (vjp_rules.transpose_fwd, vjp_rules.transpose_bwd)
+ad_map[torch.diag] = (vjp_rules.diag_fwd, vjp_rules.diag_bwd)
+ad_map[vjp_rules.scale] = (vjp_rules.scale_fwd, vjp_rules.scale_bwd)
+ad_map[torch.trace] = (vjp_rules.trace_fwd, vjp_rules.trace_bwd)
+ad_map[operator.add] = (vjp_rules.add_fwd, vjp_rules.add_bwd)
+ad_map[operator.mul] = (vjp_rules.mul_fwd, vjp_rules.mul_bwd)
 

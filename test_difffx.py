@@ -8,7 +8,7 @@ def test_foo():
     def foo(x):
         w = torch.trace(x)
         w = torch.sin(w)
-        a = vjp_rules.scale(w, x)
+        a = w * x
         return a
 
     torch.manual_seed(42)
@@ -21,3 +21,6 @@ def test_foo():
 
     PyTree.assert_close(foo_vjp_pt(x,dret), foo_vjp(x, dret))
     print('VJPs match OK')
+
+if __name__ == "__main__":
+    test_foo()
