@@ -1,14 +1,20 @@
 import operator
 import torch
 from vjp_check import vjp_check_fwdbwd
+from fx_shnty import shnty_propagator
 
 # Define a bunch of manual vjps
 # Ultimately parse these out of https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml
 
-
+# SCALE
 @torch.fx.wrap
 def scale(a, T):
     return a * T
+
+
+@shnty_propagator(scale)
+def _(A, B):
+    return B
 
 
 def scale_fwd(a, T):
@@ -30,6 +36,9 @@ def test_scale():
     )
 
 
+# MUL
+
+
 def mul_fwd(A, B):
     return A * B, (A, B)
 
@@ -43,9 +52,10 @@ def test_mul():
     vjp_check_fwdbwd(
         operator.mul, mul_fwd, mul_bwd, (torch.randn(3, 4), torch.randn(3, 4))
     )
-    vjp_check_fwdbwd(
-        operator.mul, mul_fwd, mul_bwd, (torch.tensor(2.2), torch.randn(3, 4))
-    )
+    # TODO:
+    # vjp_check_fwdbwd(
+    #     operator.mul, mul_fwd, mul_bwd, (torch.tensor(3.14159), torch.randn(3, 4))
+    # )
 
 
 def matmul_fwd(A, B):
@@ -67,6 +77,7 @@ def test_matmul():
         operator.matmul, matmul_fwd, matmul_bwd, (torch.randn(3, 4), torch.randn(4, 5))
     )
 
+
 # Add
 def add_fwd(A, B):
     return A + B, None
@@ -81,12 +92,15 @@ def test_add():
         operator.add, add_fwd, add_bwd, (torch.randn(3, 4), torch.randn(3, 4))
     )
 
+
 # Sin
 def sin_fwd(x):
     return (torch.sin(x), x)
 
-def sin_bwd(aux_is_x,dret): 
+
+def sin_bwd(aux_is_x, dret):
     return torch.cos(aux_is_x) * dret
+
 
 def test_sin():
     vjp_check_fwdbwd(torch.sin, sin_fwd, sin_bwd, (torch.randn(3, 4),))
@@ -117,13 +131,14 @@ def neg_bwd(aux, dret):
 def test_neg():
     vjp_check_fwdbwd(torch.neg, neg_fwd, neg_bwd, (torch.randn(3, 4),))
 
+
 # Trace
 def trace_fwd(x):
     return torch.trace(x), x.shape
 
 
-def trace_bwd(shape, dret):
-    return dret * torch.eye(*shape)
+def trace_bwd(x_shape, dret):
+    return dret * torch.eye(*x_shape)
 
 
 def test_trace():
@@ -145,16 +160,20 @@ def test_diag():
 
 # transpose
 def transpose(x):
-    return torch.transpose(x,0,1)
+    return torch.transpose(x, 0, 1)
+
 
 def transpose_fwd(x):
     return transpose(x), None
 
+
 def transpose_bwd(aux, dret):
     return transpose(dret)
 
+
 def test_transpose():
     vjp_check_fwdbwd(transpose, transpose_fwd, transpose_bwd, (torch.randn(3, 5),))
+
 
 # def transpose_fwd(x,m,n):
 #     return torch.transpose(x,m,n), (m,n)
@@ -163,6 +182,3 @@ def test_transpose():
 # def transpose_bwd(aux, dret):
 #     m,n = aux
 #     return (torch.transpose(dret, m,n), None, None)
-
-
-  
