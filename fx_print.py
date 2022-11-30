@@ -5,13 +5,20 @@ def _commajoin(vs):
     return ",".join(vs)
 
 
+def fn_name(f):
+    n = f.__name__
+    if hasattr(f, "__module__") and f.__module__ != "_operator":
+        return f"{f.__module__}.{n}"
+    else:
+        return n
+
+
 def fx_print_node(node, gm=None, name2ord=None):
     def argstr(a):
         if name2ord and isinstance(a, torch.fx.Node):
             return name2ord[a.name]
         return str(a)
 
-    target = node.target.__name__ if node.op == "call_function" else node.target
     args = [argstr(a) for a in node.args]
     comment = f" # {node.meta['shnty']}" if "shnty" in node.meta else ""
 
@@ -20,24 +27,24 @@ def fx_print_node(node, gm=None, name2ord=None):
 
     lhs = argstr(node)
     if node.op == "placeholder":
-        return f"{lhs} = {target}{comment}"
+        return f"{lhs} = {node.target}{comment}"
 
     if node.op == "call_function":
-        return f"{lhs} = {target}({_commajoin(args)}){comment}"
+        return f"{lhs} = {fn_name(node.target)}({_commajoin(args)}){comment}"
 
     if node.op == "call_method":
-        return f'{lhs} = {argstr(args[0])}.{target}({",".join(args[1:])}){comment}'
+        return f'{lhs} = {argstr(args[0])}.{node.target}({",".join(args[1:])}){comment}'
 
     if node.op == "get_attr":
         assert len(args) == 0
         if gm:
-            val = getattr(gm, target)
+            val = getattr(gm, node.target)
             valstr = str(val).replace("\n", "\\n")[:40]
         else:
             valstr = "pass gm for value"
-        return f"{lhs} = {target} # {valstr}"
+        return f"{lhs} = {node.target} # {valstr}"
 
-    return f'# unhandled {node.op} {argstr(node)} = {target}({",".join(args)}){comment}'
+    return f'# unhandled {node.op} {argstr(node)} = {node.target}({",".join(args)}){comment}'
 
 
 def fx_print(gm):

@@ -6,7 +6,7 @@ from icecream import ic
 import torch
 import torch.fx as tfx
 
-from fx_print import fx_print_node
+from fx_print import fx_print_node, fn_name
 
 # --------------
 def shape2str(sh: torch.Size):
@@ -121,17 +121,9 @@ def shnty_propagator_add(op, propagator):
     _shnty_propagator_dict[op] = propagator
 
 
-def _fn_name(f):
-    n = f.__name__
-    if hasattr(f, "__module__"):
-        return f"{f.__module__}.{n}"
-    else:
-        return n
-
-
 def _opspec_to_str(opspec):
     if isinstance(opspec, Callable):
-        return f"function `{_fn_name(opspec)}`"
+        return f"function `{fn_name(opspec)}`"
 
     if isinstance(opspec, tuple):
         ty, attr = opspec
@@ -270,7 +262,8 @@ def justone(iter):
     return val[0]
 
 
-_log = lambda x: print(x)
+_log = lambda x: ...
+# _log = print
 
 
 class ShapeAndTypeTracer(tfx.Tracer):
