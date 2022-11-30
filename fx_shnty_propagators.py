@@ -6,26 +6,34 @@ from fx_shnty import ShapeAndType, shnty_propagator, shnty_propagator_add
 # --------------  Declare lots of propagators
 
 
+def is_shnty(x):
+    return isinstance(x, ShapeAndType)
+
+
 def broadcast_shapes(arg1, *args):
     if len(args) == 0:
         return arg1
     else:
-        return tuple(s for s in torch.broadcast_shapes(arg1, *args))
+        sh = torch.broadcast_shapes(arg1, *args)
+        return tuple(s for s in sh)
 
 
-def shnty_propagate_broadcast_aux(op, arg0, *args):
+def shnty_propagate_broadcast_aux(op, *args):
     msg = f"shnty_propagate_broadcast_aux {op}"
-    assert isinstance(arg0, ShapeAndType), msg
-    assert all(isinstance(arg, ShapeAndType) for arg in args), msg
-    sh = broadcast_shapes(arg0.sh, *(arg.sh for arg in args))
-    dty = arg0.dtype_or_default_type()
-    for arg in args:
-        dty = torch.promote_types(dty, arg.dtype_or_default_type())
 
-    if sh == ():
-        return ShapeAndType(dty, (), None)
-    else:
-        return ShapeAndType(torch.Tensor, sh, dty)
+    # Shape
+    shapes = [a.sh if is_shnty(a) else () for a in args]
+    sh = broadcast_shapes(*shapes)
+
+    # Type
+    def get_type(a):
+        return a.dtype_or_default_type() if is_shnty(a) else type(a)
+
+    dty = get_type(args[0])
+    for arg in args:
+        dty = torch.promote_types(dty, get_type(arg))
+
+    return ShapeAndType(torch.Tensor, sh, dty)
 
 
 def shnty_propagate_broadcast(op):
@@ -86,6 +94,10 @@ def _(A, B):
 
 @shnty_propagator((torch.Tensor, "sum"))
 @shnty_propagator(torch.sum)
-def _(x):
+def _(x, dim=None):
     assert x.isTensor
-    return ShapeAndType(x.ty, (), x.dty)
+    if not dim or len(dim) == 0:
+        sh = ()  # sum over all elements
+    else:
+        sh = tuple(s for i, s in enumerate(x.sh) if i not in dim)
+    return ShapeAndType(x.ty, sh, x.dty)

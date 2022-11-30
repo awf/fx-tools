@@ -7,7 +7,7 @@ from icecream import ic
 import torch.fx as tfx
 
 from fx_print import fx_print
-from fx_shnty import shnty_trace, get_return_shnty
+from fx_shnty import shnty_trace, get_return_shnty, fx_get_shnty
 import fx_shnty_propagators
 
 
@@ -15,6 +15,13 @@ def ensure_tuple(x):
     if isinstance(x, tuple):
         return x
     return (x,)
+
+
+def shnty(x):
+    """
+    Get shape and type of argument x
+    """
+    return fx_get_shnty(x)
 
 
 # ----------------
@@ -82,7 +89,7 @@ def vjp(f, sample_input):
             # So remember: (args, bwd, aux, val)
             # Note that all of these are symbolic, so it's cheap to remember them
             self.stack.append((args, bwd, aux, val))
-            # And return the return value (a proxy)
+            # And return the return value (an FX Proxy)
             return val
 
         def call_method(self, target, args, kwargs):
@@ -142,7 +149,7 @@ ad_map[operator.add] = (vjp_rules.add_fwd, vjp_rules.add_bwd)
 ad_map[operator.mul] = (vjp_rules.mul_fwd, vjp_rules.mul_bwd)
 ad_map[operator.matmul] = (vjp_rules.matmul_fwd, vjp_rules.matmul_bwd)
 ad_map[torch.neg] = vjp_linear(torch.neg)
-ad_map[torch.sin] = {vjp_rules.sin_fwd, vjp_rules.sin_bwd}
+ad_map[torch.sin] = (vjp_rules.sin_fwd, vjp_rules.sin_bwd)
 ad_map[torch.relu] = (vjp_rules.relu_fwd, vjp_rules.relu_bwd)
 ad_map[torch.transpose] = (vjp_rules.transpose_fwd, vjp_rules.transpose_bwd)
 ad_map[torch.diag] = (vjp_rules.diag_fwd, vjp_rules.diag_bwd)
