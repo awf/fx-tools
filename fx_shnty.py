@@ -66,6 +66,8 @@ class ShapeAndType:
         if not isinstance(self.ty, (Type, torch.dtype)):
             raise ValueError(msg, f"ty {self.ty} not a type")
         if not self.isTensor:
+            if self.sh != ():
+                raise ValueError(msg, f"Non-tensor has non-empty shape {self.sh}")
             return
         if not isinstance(self.sh, tuple):
             raise ValueError(msg, f"shape {self.sh} not a tuple")
@@ -81,7 +83,7 @@ def assert_shnty_ok(msg, s):
     s.assert_ok(msg)
 
 
-def get_shnty(x):
+def shnty_from_val(x):
     """
     Construct a ShapeAndType from an object x
     """
@@ -237,7 +239,7 @@ def fx_get_shnty(x):
         return x.shnty_node_.meta[ShapeAndTypeProxy.TAG]
 
     # It's not an FX object.
-    return get_shnty(x)
+    return shnty_from_val(x)
 
 
 def fx_get_shnty_or_val(x):
@@ -253,9 +255,13 @@ def fx_get_shnty_or_val(x):
     # It's not an FX object.
     # Return shnty if Tensor, else val
     if isinstance(x, torch.Tensor):
-        return get_shnty(x)
+        return shnty_from_val(x)
 
     return x
+
+
+def fx_shape(x):
+    return fx_get_shnty(x).sh
 
 
 def justone(iter):
@@ -264,7 +270,7 @@ def justone(iter):
     return val[0]
 
 
-_log = lambda x: ...  # print(x)
+_log = lambda x: print(x)
 
 
 class ShapeAndTypeTracer(tfx.Tracer):

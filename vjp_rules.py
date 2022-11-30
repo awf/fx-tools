@@ -1,7 +1,7 @@
 import operator
 import torch
 from vjp_check import vjp_check_fwdbwd
-from fx_shnty import shnty_propagator
+from fx_shnty import shnty_propagator, fx_shape
 from icecream import ic
 
 # Define a bunch of manual vjps
@@ -122,7 +122,9 @@ def mul_fwd(A, B):
 
 def mul_bwd(aux, dret):
     A, B = aux
-    shape, (expanderA, expanderB) = broadcast_shapes_with_expanders(A.shape, B.shape)
+    shape, (expanderA, expanderB) = broadcast_shapes_with_expanders(
+        fx_shape(A), fx_shape(B)
+    )
 
     def contract_over_expanded_dims(X, expander):
         dims_to_sum = tuple(i for i, v in enumerate(expander) if v != -1)
@@ -143,7 +145,7 @@ def test_mul():
     vjp_check_fwdbwd(
         operator.mul, mul_fwd, mul_bwd, (torch.tensor(3.14159), torch.randn(3, 4))
     )
-    vjp_check_fwdbwd(operator.mul, mul_fwd, mul_bwd, (3.14159, torch.randn(3, 4)))
+    # works for difffx, not for torch:    vjp_check_fwdbwd(operator.mul, mul_fwd, mul_bwd, (3.14159, torch.randn(3, 4)))
 
 
 def matmul_fwd(A, B):

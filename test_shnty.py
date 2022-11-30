@@ -1,14 +1,42 @@
+import operator
 import torch
 
 from icecream import ic
 
-from fx_shnty import fx_get_shnty, get_return_shnty, shnty_trace
+from fx_shnty import (
+    fx_get_shnty,
+    fx_get_shnty_or_val,
+    shnty_from_val,
+    get_return_shnty,
+    shnty_trace,
+    _shnty_propagator_dict,
+)
 import fx_shnty_propagators
 
 from fx_print import fx_print
 
 
-def test_shnty():
+def test_shnty_0():
+    def test(op, *args):
+        val = op(*(v for v, _ in args))
+        shntys = [fx_get_shnty_or_val(vors) for _, vors in args]
+        sh = _shnty_propagator_dict[op](*shntys)
+        assert shnty_from_val(val) == sh
+
+    def v(x):
+        return x, x
+
+    def s(x):
+        return x, shnty_from_val(x)
+
+    for f1 in (s, v):
+        for f2 in (s, v):
+            test(operator.mul, f1(torch.randn(3, 4)), f2(torch.randn(3, 4)))
+            test(operator.mul, f1(torch.randn(3, 4)), f2(5))
+            test(operator.mul, f1(torch.randn(3, 4)), f2(5.5))
+
+
+def test_shnty_1():
     def aux(p, q):
         return torch.relu(1.234 * p * q).neg()
 
@@ -19,14 +47,15 @@ def test_shnty():
         t = b * y
         t = t * torch.sum(t)
         t = t / t.sum()
-        x = x @ (t.T @ t)
+        tt = t.T
+        tTt = tt @ t
+        x = x @ tTt
         return torch.atan2(t, x)
 
     x = torch.rand(3, 5)
     x_shnty = fx_get_shnty(x)
     b = 3
     b_shnty = fx_get_shnty(b)
-    print("xb", x_shnty, b_shnty)
 
     ret = my_func(x, b)
 
@@ -39,6 +68,8 @@ def test_shnty():
     # Test return type
     assert get_return_shnty(gm) == fx_get_shnty(ret)
 
+
+def test_shnty_2():
     # Test passing shapes
     def foo_a(x):
         return x * 14, x.shape
@@ -50,7 +81,11 @@ def test_shnty():
         y, sh = foo_a(x)
         return foo_b(y, sh)
 
-    ret == foo(x)
+    x = torch.rand(3, 5)
+    x_shnty = fx_get_shnty(x)
+    b = 3
+    b_shnty = fx_get_shnty(b)
+    ret = foo(x)
 
     gm = shnty_trace(foo, arg_shntys=(x_shnty,))
     fx_print(gm)
@@ -74,4 +109,4 @@ def test_shnty():
 
 
 if __name__ == "__main__":
-    test_shnty()
+    test_shnty_2()

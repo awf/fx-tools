@@ -1,13 +1,20 @@
 import operator
 import torch
 
-from fx_shnty import ShapeAndType, shnty_propagator, shnty_propagator_add
+from fx_shnty import ShapeAndType, fx_shape, shnty_propagator, shnty_propagator_add
 
 # --------------  Declare lots of propagators
 
 
 def is_shnty(x):
     return isinstance(x, ShapeAndType)
+
+
+def shnty_or_val_shape(x):
+    if isinstance(x, ShapeAndType):
+        return x.sh
+
+    return fx_shape(x)
 
 
 def broadcast_shapes(arg1, *args):
@@ -19,19 +26,27 @@ def broadcast_shapes(arg1, *args):
 
 
 def shnty_propagate_broadcast_aux(op, *args):
+    """
+    Propagate OP, with normal Pytorch broadcasting semantics
+    ARGS may be ShapeAndType or values
+    """
     msg = f"shnty_propagate_broadcast_aux {op}"
 
     # Shape
-    shapes = [a.sh if is_shnty(a) else () for a in args]
+    shapes = [shnty_or_val_shape(a) for a in args]
     sh = broadcast_shapes(*shapes)
 
     # Type
-    def get_type(a):
-        return a.dtype_or_default_type() if is_shnty(a) else type(a)
+    def get_dtype(a):
+        if isinstance(a, ShapeAndType):
+            return a.dtype_or_default_type()
+        if isinstance(a, torch.Tensor):
+            return a.dtype
+        return torch.tensor(a).dtype
 
-    dty = get_type(args[0])
+    dty = get_dtype(args[0])
     for arg in args:
-        dty = torch.promote_types(dty, get_type(arg))
+        dty = torch.promote_types(dty, get_dtype(arg))
 
     return ShapeAndType(torch.Tensor, sh, dty)
 
@@ -88,8 +103,9 @@ def _(A, B):
     leading_dims = A.sh[:-2]
     assert pA == pB
     assert leading_dims == B.sh[:-2]
-    assert A.dty == B.dty  # TODO: promotions
-    return ShapeAndType(A.ty, (*leading_dims, m, n), A.dty)
+
+    dty = torch.promote_types(A.dty, B.dty)
+    return ShapeAndType(A.ty, (*leading_dims, m, n), dty)
 
 
 @shnty_propagator((torch.Tensor, "sum"))
