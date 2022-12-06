@@ -19,25 +19,19 @@ def type2str(ty):
 
 # --------------
 @dataclass
-class ShapeAndType:
+class AbstractValue:
     """
-    A class representing the shape and type of a Python object.
-    For classes other than torch.Tensor, it's simply the type.
-    For torch.Tensor, it's the type, shape, and dtype.
+    A class representing just the type of a Python object.
 
-    For a large number of operations, the ShapeAndType of the output
-    can be determined as a function of its inputs.
+    For a large number of operations, the type of the output
+    can be determined as a function of its inputs, using propagators
+    defined using `shnty_propagator`
     """
 
     ty: Type
-    sh: Tuple[int]  # Valid only if ty == Tensor else ()
-    dty: torch.dtype  # Valid only if ty == Tensor else None
 
     def __str__(self):
-        if self.isTensor:
-            return f"shnty:Tensor[({shape2str(self.sh)}),{type2str(self.dty)}]"
-        else:
-            return f"shnty[{type2str(self.ty)}]"
+        return f"shnty[{type2str(self.ty)}]"
 
     def __repr__(self):
         return str(self)
@@ -46,64 +40,73 @@ class ShapeAndType:
     def isTensor(self) -> bool:
         return self.ty == torch.Tensor
 
-    def dtype_or_type(self):
-        return self.dty if self.isTensor else self.ty
-
-    def dtype_or_default_type(self):
-        if self.isTensor:
-            return self.dty
-
-        if isinstance(self.ty, torch.dtype):
-            return self.ty
-        elif self.ty in (float,):
-            return torch.get_default_dtype()
-        elif self.ty in (int,):
-            return torch.int32
-
-        raise NotImplementedError(f"Default dtype for {self.ty}")
-
     def assert_ok(self, msg):
         if not isinstance(self.ty, (Type, torch.dtype)):
             raise ValueError(msg, f"ty {self.ty} not a type")
-        if not self.isTensor:
-            if self.sh != ():
-                raise ValueError(msg, f"Non-tensor has non-empty shape {self.sh}")
-            return
-        if not isinstance(self.sh, tuple):
-            raise ValueError(msg, f"shape {self.sh} not a tuple")
-        if not all(isinstance(s, int) for s in self.sh):
-            raise ValueError(msg, f"shape {self.sh} not all ints")
-        if not isinstance(self.dty, torch.dtype):
-            raise ValueError(msg, f"dtype {self.dty} not a torch.dtype")
+
+
+@dataclass
+class AbstractTensor(AbstractValue):
+    """
+    A class representing the the shape and dtype of a Python object.
+    Numerous methods on Tensor are not supported by AbstractTensor,
+    but several very useful ones are:
+      shape
+      dtype
+
+    For a large number of operations, the AbstractValue of the output
+    can be determined as a function of its inputs, using propagators
+    defined using `shnty_propagator`
+    """
+
+    shape: torch.Size
+    dtype: torch.dtype
+
+    def __init__(self, shape, dtype):
+        super().__init__(torch.Tensor)
+        assert isinstance(shape, torch.Size)
+        assert isinstance(dtype, torch.dtype)
+        self.shape = shape
+        self.dtype = dtype
+
+    def __str__(self):
+        return f"shnty:Tensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
+
+    def __repr__(self):
+        return str(self)
+
+    def assert_ok(self, msg):
+        if not all(isinstance(s, int) for s in self.shape):
+            raise ValueError(msg, f"shape {self.shape} not all ints")
+        if not isinstance(self.dtype, torch.dtype):
+            raise ValueError(msg, f"dtype {self.dtype} not a torch.dtype")
 
 
 def assert_shnty_ok(msg, s):
-    if not isinstance(s, ShapeAndType):
-        raise ValueError(msg, f"Not a ShapeAndType: {s}")
+    if not isinstance(s, AbstractValue):
+        raise ValueError(msg, f"Not a AbstractValue: {s}")
     s.assert_ok(msg)
 
 
-def shnty_from_val(x):
+def abstractify(x):
     """
-    Construct a ShapeAndType from an object x
+    Construct an AbstractValue from an object x
     """
     if isinstance(x, torch.Tensor):
-        ty = torch.Tensor
-        sh = tuple(s for s in x.shape)
-        dty = x.dtype
+        return AbstractTensor(x.shape, x.dtype)
     else:
-        ty = type(x)
-        sh = ()
-        dty = None
-
-    return ShapeAndType(ty, sh, dty)
+        if isinstance(x, (float, int)):
+            ty = torch.tensor(x).dtype
+        else:
+            ty = type(x)
+        return AbstractValue(ty)
 
 
 # This is the mapping from (function|method) to shape propagator
 FunctionSpec = FunctionType  # Function, e.g. torch.relu, operator.mul
 MethodSpec = Tuple[Type, str]  # Method, e.g. (torch.Tensor, 'neg')
 ModuleSpec = Any  # TODO: modules
-ShapePropagator = Callable[..., ShapeAndType]
+ShapePropagator = Callable[..., AbstractValue]
 
 global _shnty_propagator_dict
 _shnty_propagator_dict: Dict[
@@ -111,8 +114,8 @@ _shnty_propagator_dict: Dict[
 ] = {}
 
 
-def shnty_propagator_add(op, propagator):
-    """shnty_propagator_add(op, propagator):
+def shnty_propagator_register(op, propagator):
+    """shnty_propagator_register(op, propagator):
     Register PROPAGATOR as tbe peopagtor for OP.
 
     See `shnty_propagator`
@@ -136,19 +139,19 @@ def _opspec_to_str(opspec):
 
 def shnty_propagator(opspec):
     """
-    Decorator to declare a function as a ShapeAndType propagator.
+    Decorator to declare a function as a AbstractValue propagator.
 
     That is, if OP is a global function
       op: *S -> T
     then
-      propagator: *ShapeAndType -> ShapeAndType
+      propagator: *AbstractValue -> AbstractValue
     such that
       get_shnty(op(s)) == propagator(get_shnty(s))
 
     ```
     @shnty_propagator(OP)
     def _(*ARGS):
-      return ShapeAndType of OP applied to ARGS
+      return AbstractValue of OP applied to ARGS
     ```
 
     The argument OPSPEC is a unique key identifying OP.
@@ -161,21 +164,21 @@ def shnty_propagator(opspec):
     ```
     @shnty_propagator(operator.matmul)
     def _(x, y):
-      return ShapeAndType(x.ty, (x.sh[0], y.sh[1]), x.dty)
+      return AbstractValue(x.ty, (x.shape[0], y.shape[1]), x.dtype)
     ```
 
     And for transpose (again ignoring broadcast etc), might look like
     ```
     @shnty_propagator((torch.Tensor, "t"))
     def _(x):
-      return ShapeAndType(x.ty, (x.sh[1], x.sh[0]), x.dty)
+      return AbstractValue(x.ty, (x.shape[1], x.shape[0]), x.dtype)
     ```
 
 
     """
 
     def the_decorator(the_propagator):
-        shnty_propagator_add(opspec, the_propagator)
+        shnty_propagator_register(opspec, the_propagator)
         # Override name, normally just '_'
         the_propagator.__name__ = (
             f"{the_propagator.__name__}<shnty_propagator({_opspec_to_str(opspec)})>"
@@ -189,8 +192,8 @@ def shnty_propagator(opspec):
     return the_decorator
 
 
-# ================= Use ShapeAndType in FX tracing ================
-class ShapeAndTypeProxy(tfx.Proxy):
+# ================= Use AbstractValue in FX tracing ================
+class AbstractValueProxy(tfx.Proxy):
     TAG = "shnty"
 
     def __init__(self, node, tracer, shnty):
@@ -202,58 +205,46 @@ class ShapeAndTypeProxy(tfx.Proxy):
         # e.g. a thing which has a ".node_" field...
         self.shnty_node_ = node
 
-    @property
-    def _shnty(self):
-        return self.shnty_node_.meta[self.TAG]
-
     # Provide torch.Tensor properties
     @property
     def shape(self):
         shnty = self.shnty_node_.meta[self.TAG]
-        assert shnty.isTensor
-        return shnty.sh
+        return shnty.shape
 
     @property
     def T(self):
-        shnty = self.shnty_node_.meta[self.TAG]
-        assert shnty.isTensor
         return self.t()
 
 
-def fx_get_shnty(x):
+def fx_get_abstract_value_or_value(x):
     if isinstance(x, tfx.Node):
-        if ShapeAndTypeProxy.TAG not in x.meta:
+        if AbstractValueProxy.TAG not in x.meta:
             print(x.graph)
             raise RuntimeError(f"This node {x} is not from a shnty_trace?")
-        return x.meta[ShapeAndTypeProxy.TAG]
+        return x.meta[AbstractValueProxy.TAG]
 
     if isinstance(x, tfx.Proxy):
-        return x.shnty_node_.meta[ShapeAndTypeProxy.TAG]
+        return x.shnty_node_.meta[AbstractValueProxy.TAG]
 
     # It's not an FX object.
-    return shnty_from_val(x)
-
-
-def fx_get_shnty_or_val(x):
-    if isinstance(x, tfx.Node):
-        if ShapeAndTypeProxy.TAG not in x.meta:
-            print(x.graph)
-            raise RuntimeError(f"This node {x} is not from a shnty_trace?")
-        return x.meta[ShapeAndTypeProxy.TAG]
-
-    if isinstance(x, tfx.Proxy):
-        return x.shnty_node_.meta[ShapeAndTypeProxy.TAG]
-
-    # It's not an FX object.
-    # Return shnty if Tensor, else val
-    if isinstance(x, torch.Tensor):
-        return shnty_from_val(x)
-
     return x
 
 
-def fx_shape(x):
-    return fx_get_shnty(x).sh
+def fx_type(x):
+    """
+    Return the type of a value or Proxy
+    """
+    if isinstance(x, AbstractValue):
+        return x.ty
+    else:
+        return type(x)
+
+
+def fx_is_tensor(x):
+    """
+    Return true if x is a Tensor or a tensor Proxy
+    """
+    return isinstance(x, torch.Tensor) or x.isTensor
 
 
 def justone(iter):
@@ -263,34 +254,38 @@ def justone(iter):
 
 
 _log = lambda x: ...
-# _log = print
+x_log = print
 
 
-class ShapeAndTypeTracer(tfx.Tracer):
-    def __init__(self, arg_shntys):
+class AbstractValueTracer(tfx.Tracer):
+    def __init__(self, aargs):
         super().__init__()
-        self.arg_shntys_used = 0
-        self.arg_shntys = arg_shntys
+        self.aargs_used = 0
+        self.aargs = aargs
 
     def proxy(self, node):
         _log(f"shnty_trace -- {fx_print_node(node)}")
         if node.op == "placeholder":
-            if self.arg_shntys_used >= len(self.arg_shntys):
-                raise ValueError("Not enough arg_shntys passed to shnty_trace")
-            shnty = self.arg_shntys[self.arg_shntys_used]
-            self.arg_shntys_used += 1
+            if self.aargs_used >= len(self.aargs):
+                raise ValueError("Not enough aargs passed to shnty_trace")
+            shnty = self.aargs[self.aargs_used]
+            self.aargs_used += 1
+            if isinstance(shnty, AbstractValue):
+                return AbstractValueProxy(node, self, shnty)
+            else:
+                return shnty
 
-        elif node.op in ("call_function", "call_method"):
+        if node.op in ("call_function", "call_method"):
             # Get arg shntys
-            arg_shntys_or_vals = tuple(
-                fx_get_shnty_or_val(self._inline_const(x)) for x in node.args
+            aargs_or_vals = tuple(
+                fx_get_abstract_value_or_value(self._inline_const(x)) for x in node.args
             )
 
             # Make lookup key
             if node.op == "call_function":
                 key = node.target
             elif node.op == "call_method":
-                key = (arg_shntys_or_vals[0].ty, node.target)
+                key = (aargs_or_vals[0].ty, node.target)
             else:
                 assert False
 
@@ -300,12 +295,11 @@ class ShapeAndTypeTracer(tfx.Tracer):
                 )
 
             # Call the propagator
-            shnty = _shnty_propagator_dict[key](*arg_shntys_or_vals)
+            shnty = _shnty_propagator_dict[key](*aargs_or_vals)
             assert_shnty_ok(f"shnty_propagate[{_opspec_to_str(key)}]", shnty)
-        else:
-            raise NotImplementedError(f"ShapeAndTypeTracer proxy for {node.op}")
+            return AbstractValueProxy(node, self, shnty)
 
-        return ShapeAndTypeProxy(node, self, shnty)
+        raise NotImplementedError(f"AbstractValueTracer proxy for {node.op}")
 
     def _inline_const(self, arg):
         if isinstance(arg, tfx.Node) and arg.op == "get_attr":
@@ -318,16 +312,37 @@ class ShapeAndTypeTracer(tfx.Tracer):
     #     return super().getattr(attr, attr_val, parameter_proxy_cache)
 
 
-def shnty_trace(func, arg_shntys):
-    _log(f"shnty_trace {arg_shntys}")
-    shnty_tracer = ShapeAndTypeTracer(arg_shntys)
+def shnty_trace(func, aargs):
+    """
+    Perform a symboic trace of callable FUNC, at the given arguments
+    Where arguments are AbstractValues, the trace will propagate their shapes
+    and types.
+    Other arguments will be treated as constants, and folded into the
+    resulting GraphModule.
+
+    Example:
+
+    ```
+    def foo(x5 : torch.Tensor, lr : float, n: int):
+
+
+    """
+    _log(f"shnty_trace {aargs}")
+    shnty_tracer = AbstractValueTracer(aargs)
     graph = shnty_tracer.trace(func)
     return tfx.GraphModule(shnty_tracer.root, graph, func.__name__)
 
 
-def get_return_shnty(gm: tfx.GraphModule):
+def get_return_abstract_value(gm: tfx.GraphModule):
+    """
+    Given an FX GraphModule created by `shnty_trace`, return
+    an AbstractValue representing the return value of the computation.
+    """
     outputs = [n for n in gm.graph.nodes if n.op == "output"]
     assert len(outputs) == 1
+    # Assuming the last node is the "output" node
     for n in reversed(gm.graph.nodes):
         assert n.op == "output"
-        return fx_get_shnty(n.args[0])
+        return fx_get_abstract_value_or_value(n.args[0])
+
+import fx_shnty_propagators

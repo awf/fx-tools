@@ -11,6 +11,12 @@
       "program": "${file}",
       "console": "integratedTerminal",
       "justMyCode": false
-    }
+    },
+    {
+      "name": "Debug Unit Test",
+      "type": "python",
+      "request": "test",
+      "justMyCode": false,
+     }
   ]
 }

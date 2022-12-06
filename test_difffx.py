@@ -18,9 +18,9 @@ def test_difffx_1():
 
     x = torch.randn(3, 3)
     foo(x)  # crash test
-    fx_print(shnty_trace(foo, (dfx.shnty(x),)))
+    fx_print(shnty_trace(foo, (dfx.abstractify(x),)))
 
-    foo_vjp = dfx.vjp(foo, (dfx.shnty(x),))
+    foo_vjp = dfx.vjp(foo, (dfx.abstractify(x),))
 
     dret = torch.randn_like(foo(x))
     foo_vjp_pt = lambda x, dret: torch.autograd.functional.vjp(foo, x, dret)

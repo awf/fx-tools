@@ -1,54 +1,46 @@
 import operator
 import torch
 
-from fx_shnty import ShapeAndType, fx_shape, shnty_propagator, shnty_propagator_add
+from fx_shnty import (
+    AbstractValue,
+    AbstractTensor,
+    fx_is_tensor,
+    shnty_propagator,
+    shnty_propagator_register,
+)
 
-# --------------  Declare lots of propagators
-
-
-def is_shnty(x):
-    return isinstance(x, ShapeAndType)
-
-
-def shnty_or_val_shape(x):
-    if isinstance(x, ShapeAndType):
-        return x.sh
-
-    return fx_shape(x)
-
-
-def broadcast_shapes(arg1, *args):
-    if len(args) == 0:
-        return arg1
-    else:
-        sh = torch.broadcast_shapes(arg1, *args)
-        return tuple(s for s in sh)
+# --------------  Broadcasting ops (e.g. add, mul, sin..)
 
 
 def shnty_propagate_broadcast_aux(op, *args):
     """
     Propagate OP, with normal Pytorch broadcasting semantics
-    ARGS may be ShapeAndType or values
+    ARGS may be AbstractValue or values
     """
     msg = f"shnty_propagate_broadcast_aux {op}"
 
     # Shape
-    shapes = [shnty_or_val_shape(a) for a in args]
-    sh = broadcast_shapes(*shapes)
+    def get_shape(a):
+        if isinstance(a, (AbstractTensor, torch.Tensor)):
+            return a.shape
+        return ()  # Assume scalar e.g. 2.2 * torch.rand(2,3)
+
+    shapes = [get_shape(a) for a in args]
+    sh = torch.broadcast_shapes(*shapes)
 
     # Type
     def get_dtype(a):
-        if isinstance(a, ShapeAndType):
-            return a.dtype_or_default_type()
-        if isinstance(a, torch.Tensor):
+        if isinstance(a, (torch.Tensor, AbstractTensor)):
             return a.dtype
+        if isinstance(a, AbstractValue):
+            return a.ty
         return torch.tensor(a).dtype
 
     dty = get_dtype(args[0])
     for arg in args:
         dty = torch.promote_types(dty, get_dtype(arg))
 
-    return ShapeAndType(torch.Tensor, sh, dty)
+    return AbstractTensor(sh, dty)
 
 
 def shnty_propagate_broadcast(op):
@@ -68,52 +60,65 @@ for op in (
     torch.sin,
     torch.cos,
 ):
-    shnty_propagator_add(op, shnty_propagate_broadcast(op))
+    shnty_propagator_register(op, shnty_propagate_broadcast(op))
 
 for method in ("neg", "sin", "cos"):
-    shnty_propagator_add((torch.Tensor, method), shnty_propagate_broadcast(op))
+    shnty_propagator_register((torch.Tensor, method), shnty_propagate_broadcast(op))
+
+# --------------  torch.trace
 
 
 @shnty_propagator(torch.trace)
 def _(x):
-    if len(x.sh) != 2:
+    assert fx_is_tensor(x)
+    if len(x.shape) != 2:
         raise NotImplementedError(
             f"check trace implementation for snhty {x}, it might be fine"
         )
-    assert x.isTensor
-    return ShapeAndType(x.ty, x.sh[:-2], x.dty)
+    return AbstractTensor(x.shape[:-2], x.dtype)
+
+
+# --------------  Tensor.t()
 
 
 @shnty_propagator((torch.Tensor, "t"))
 def _(x):
-    if len(x.sh) != 2:
+    if len(x.shape) != 2:
         raise NotImplementedError(f"check transpose implementation for snhty {x}")
 
-    assert x.isTensor
-    sh = (*x.sh[:-2], x.sh[-1], x.sh[-2])
-    return ShapeAndType(x.ty, sh, x.dty)
+    assert fx_is_tensor(x)
+    sh = torch.Size((*x.shape[:-2], x.shape[-1], x.shape[-2]))
+    return AbstractTensor(sh, x.dtype)
+
+
+# --------------  @ matmul
 
 
 @shnty_propagator(operator.matmul)
 def _(A, B):
-    assert A.isTensor and B.isTensor
+    assert fx_is_tensor(A) and fx_is_tensor(B)
     # m x p times p x n
-    m, pA = A.sh[-2:]
-    pB, n = B.sh[-2:]
-    leading_dims = A.sh[:-2]
+    m, pA = A.shape[-2:]
+    pB, n = B.shape[-2:]
+    leading_dims = A.shape[:-2]
     assert pA == pB
-    assert leading_dims == B.sh[:-2]
+    assert leading_dims == B.shape[:-2]
 
-    dty = torch.promote_types(A.dty, B.dty)
-    return ShapeAndType(A.ty, (*leading_dims, m, n), dty)
+    dty = torch.promote_types(A.dtype, B.dtype)
+    return AbstractTensor(torch.Size((*leading_dims, m, n)), dty)
+
+
+# --------------  torch.sum
 
 
 @shnty_propagator((torch.Tensor, "sum"))
 @shnty_propagator(torch.sum)
 def _(x, dim=None):
-    assert x.isTensor
+    assert fx_is_tensor(x)
+
     if not dim or len(dim) == 0:
-        sh = ()  # sum over all elements
-    else:
-        sh = tuple(s for i, s in enumerate(x.sh) if i not in dim)
-    return ShapeAndType(x.ty, sh, x.dty)
+        sh = ()  # sum over all elements, return type is scalar
+        return AbstractValue(x.dtype)
+
+    sh = torch.Size(s for i, s in enumerate(x.shape) if i not in dim)
+    return AbstractTensor(sh, x.dtype)

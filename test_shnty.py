@@ -4,14 +4,11 @@ import torch
 from icecream import ic
 
 from fx_shnty import (
-    fx_get_shnty,
-    fx_get_shnty_or_val,
-    shnty_from_val,
-    get_return_shnty,
+    abstractify,
+    get_return_abstract_value,
     shnty_trace,
     _shnty_propagator_dict,
 )
-import fx_shnty_propagators
 
 from fx_print import fx_print
 
@@ -19,15 +16,15 @@ from fx_print import fx_print
 def test_shnty_0():
     def test(op, *args):
         val = op(*(v for v, _ in args))
-        shntys = [fx_get_shnty_or_val(vors) for _, vors in args]
+        shntys = [vors for _, vors in args]
         sh = _shnty_propagator_dict[op](*shntys)
-        assert shnty_from_val(val) == sh
+        assert abstractify(val) == sh
 
     def v(x):
         return x, x
 
     def s(x):
-        return x, shnty_from_val(x)
+        return x, abstractify(x)
 
     for f1 in (s, v):
         for f2 in (s, v):
@@ -53,20 +50,20 @@ def test_shnty_1():
         return torch.atan2(t, x)
 
     x = torch.rand(3, 5)
-    x_shnty = fx_get_shnty(x)
+    x_shnty = abstractify(x)
     b = 3
-    b_shnty = fx_get_shnty(b)
+    b_shnty = abstractify(b)
 
     ret = my_func(x, b)
 
-    gm = shnty_trace(my_func, arg_shntys=(x_shnty, b_shnty))
+    gm = shnty_trace(my_func, aargs=(x_shnty, b_shnty))
 
     print(gm.graph)
     fx_print(gm)
-    print(get_return_shnty(gm))
+    print(get_return_abstract_value(gm))
 
     # Test return type
-    assert get_return_shnty(gm) == fx_get_shnty(ret)
+    assert get_return_abstract_value(gm) == abstractify(ret)
 
 
 def test_shnty_2():
@@ -82,14 +79,12 @@ def test_shnty_2():
         return foo_b(y, sh)
 
     x = torch.rand(3, 5)
-    x_shnty = fx_get_shnty(x)
     b = 3
-    b_shnty = fx_get_shnty(b)
     ret = foo(x)
 
-    gm = shnty_trace(foo, arg_shntys=(x_shnty,))
+    gm = shnty_trace(foo, (abstractify(x),))
     fx_print(gm)
-    assert get_return_shnty(gm) == fx_get_shnty(ret)
+    assert get_return_abstract_value(gm) == abstractify(ret)
 
     # Test tensor constants
     def foo_c(x):
@@ -97,16 +92,39 @@ def test_shnty_2():
         return x @ I @ x.T
 
     ret = foo_c(x)
-    ic(ret)
 
-    gm = shnty_trace(foo_c, arg_shntys=(x_shnty,))
+    gm = shnty_trace(foo_c, aargs=(abstractify(x),))
     fx_print(gm)
-    assert get_return_shnty(gm) == fx_get_shnty(ret)
+    assert get_return_abstract_value(gm) == abstractify(ret)
 
     # TODO test for notimplemented exceptions on function, method, module
 
-    # Test for poorly implemented propagator, e.g. returning 'int' rather than 'ShapeAndType((), int)`
+    # TODO Test for poorly implemented propagator, e.g. returning 'int' rather than 'AbstractValue((), int)`
+
+
+def test_shnty_3():
+
+    from fx_shnty import shnty_trace, abstractify
+    from fx_print import fx_print
+
+    def aux(p, q):
+        return torch.relu(1.234 * p * q).neg()
+
+    def foo(x, b, n):
+        y = b * x
+        for _ in range(n):  # Loops will be unrolled
+            x = aux(x, y)  # Function calls will be inlined
+        return torch.atan2(y, x)
+
+    x = torch.randn(3, 5)
+    b = 8.2
+    n = 2
+    foo(x, b, n)
+
+    foo_gm = shnty_trace(foo, (abstractify(x), abstractify(b), n))
+
+    fx_print(foo_gm)
 
 
 if __name__ == "__main__":
-    test_shnty_2()
+    test_shnty_3()

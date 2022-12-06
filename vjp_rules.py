@@ -1,7 +1,7 @@
 import operator
 import torch
 from vjp_check import vjp_check_fwdbwd
-from fx_shnty import shnty_propagator, fx_shape
+from fx_shnty import shnty_propagator
 from icecream import ic
 
 # Define a bunch of manual vjps
@@ -40,40 +40,23 @@ def test_scale():
 # BS
 
 
-def broadcast_shapes_with_expanders(*shapes):
-    r"""broadcast_shapes_with_expanders(*shapes) -> (Size, Tuple[Size])
-
-    A copy of torch.broadcast_shapes which returns expanders such that
-        shapes[i].expand(expanders[i])
-    represents the broadcast version of shapes[i]
-
-    Args:
-        \*shapes (torch.Size): Shapes of tensors.
-
-    Returns:
-        shape (torch.Size): A shape compatible with all input shapes.
-        expanders (List[torch.Size]): Expanders as above.
-
-    Raises:
-        RuntimeError: If shapes are incompatible.
+def shape_to_expander(result, shape):
+    """shape_to_expander(result, shape) -> torch.Size
+    Given that argument `shape` has been broadcast to `result`,
+    return `dims` such that
+      t.expand(dims)
+    has shape `result` where `t` is a tensor of shape `shape`.
     """
-    result = torch.broadcast_shapes(*shapes)
-
-    def shape_to_expander(shape):
-        if isinstance(shape, int):
-            shape = (shape,)
-        expander = list(r for r in result)
-        for i in range(-1, -1 - len(shape), -1):
-            if shape[i] == 1:
-                expander[i] = result[i]
-            else:
-                assert shape[i] == result[i]
-                expander[i] = -1
-        return expander
-
-    expanders = [shape_to_expander(shape) for shape in shapes]
-
-    return result, expanders
+    if isinstance(shape, int):
+        shape = (shape,)
+    expander = list(r for r in result)
+    for i in range(-1, -1 - len(shape), -1):
+        if shape[i] == 1:
+            expander[i] = result[i]
+        else:
+            assert shape[i] == result[i]
+            expander[i] = -1
+    return expander
 
 
 def test_broadcast_shapes():
@@ -90,25 +73,25 @@ def test_broadcast_shapes():
             x1 = torch.randn(s1)
             expected = torch.broadcast_tensors(x0, x1)[0].shape
 
-            actual, expanders = broadcast_shapes_with_expanders(s0, s1)
+            actual = torch.broadcast_shapes(s0, s1)
             assertEqual(expected, actual)
 
             expected_val = torch.atan2(x0, x1)
-            x0_expanded = x0.expand(expanders[0])
-            x1_expanded = x1.expand(expanders[1])
+            x0_expanded = x0.expand(shape_to_expander(actual, s0))
+            x1_expanded = x1.expand(shape_to_expander(actual, s1))
             assert x0_expanded.shape == x1_expanded.shape
             actual_val = torch.atan2(x0_expanded, x1_expanded)
             assertEqual(expected_val, actual_val)
 
     inputs_list = [[1, 4], [4, 1], [1, 1, 3]]
     for integral_inputs in inputs_list:
-        res1, _expanders = broadcast_shapes_with_expanders(*integral_inputs)
+        res1 = torch.broadcast_shapes(*integral_inputs)
         res2 = torch.broadcast_tensors(*map(torch.empty, integral_inputs))[0].shape
         assertEqual(res1, res2)
 
     diff_input_types = [(1, (5,)), (3, (1,)), (1, (3, 4))]
     for s0 in diff_input_types:
-        res1, _expanders = broadcast_shapes_with_expanders(*s0)
+        res1 = torch.broadcast_shapes(*s0)
         res2 = torch.broadcast_tensors(*map(torch.empty, s0))[0].shape
         assertEqual(res1, res2)
 
@@ -122,9 +105,7 @@ def mul_fwd(A, B):
 
 def mul_bwd(aux, dret):
     A, B = aux
-    shape, (expanderA, expanderB) = broadcast_shapes_with_expanders(
-        fx_shape(A), fx_shape(B)
-    )
+    shape = torch.broadcast_shapes(A.shape, B.shape)
 
     def contract_over_expanded_dims(X, expander):
         dims_to_sum = tuple(i for i, v in enumerate(expander) if v != -1)
@@ -133,8 +114,8 @@ def mul_bwd(aux, dret):
         else:
             return X
 
-    dA = contract_over_expanded_dims(B * dret, expanderA)
-    dB = contract_over_expanded_dims(A * dret, expanderB)
+    dA = contract_over_expanded_dims(B * dret, shape_to_expander(shape, A.shape))
+    dB = contract_over_expanded_dims(A * dret, shape_to_expander(shape, B.shape))
     return (dA, dB)
 
 

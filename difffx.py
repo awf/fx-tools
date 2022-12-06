@@ -7,8 +7,7 @@ from icecream import ic
 import torch.fx as tfx
 
 from fx_print import fx_print
-from fx_shnty import shnty_trace, get_return_shnty, fx_get_shnty
-import fx_shnty_propagators
+from fx_shnty import shnty_trace, get_return_abstract_value
 
 
 def ensure_tuple(x):
@@ -17,12 +16,9 @@ def ensure_tuple(x):
     return (x,)
 
 
-def shnty(x):
-    """
-    Get shape and type of argument x
-    """
-    return fx_get_shnty(x)
+import fx_shnty
 
+abstractify = fx_shnty.abstractify
 
 # ----------------
 
@@ -102,7 +98,7 @@ def vjp(f, sample_input):
     f_trace = shnty_trace(f, sample_input)
 
     fx_print(f_trace)
-    ret_shnty = get_return_shnty(f_trace)
+    ret_shnty = get_return_abstract_value(f_trace)
 
     # This is the "template" function for the VJP
     def vjp_template(x, dret):
