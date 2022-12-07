@@ -1,4 +1,4 @@
-from types import FunctionType, MethodDescriptorType
+from types import FunctionType, MethodDescriptorType, GetSetDescriptorType
 from typing import Tuple, Type, Callable, Dict, Union, Any
 from dataclasses import dataclass
 from icecream import ic
@@ -31,7 +31,7 @@ class AbstractValue:
     ty: Type
 
     def __str__(self):
-        return f"shnty[{type2str(self.ty)}]"
+        return f"abval[{type2str(self.ty)}]"
 
     def __repr__(self):
         return str(self)
@@ -70,7 +70,7 @@ class AbstractTensor(AbstractValue):
         self.dtype = dtype
 
     def __str__(self):
-        return f"shnty:Tensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
+        return f"abval:Tensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
 
     def __repr__(self):
         return str(self)
@@ -124,6 +124,13 @@ def shnty_propagator_register(op, propagator):
     _shnty_propagator_dict[op] = propagator
 
 
+def _classname(x):
+    if x.__class__ == torch.Tensor.__class__:
+        return "torch.Tensor"  # not _TensorBase
+    else:
+        return x.__qualname___
+
+
 def _opspec_to_str(opspec):
     if isinstance(opspec, Callable):
         return f"function `{fn_name(opspec)}`"
@@ -133,6 +140,9 @@ def _opspec_to_str(opspec):
         assert isinstance(ty, Type)
         assert isinstance(attr, str)
         return f"method `{type2str(ty)}.{attr}`"
+
+    if isinstance(opspec, GetSetDescriptorType):
+        return f"attr `{_classname(opspec.__objclass__)}.{opspec.__name__}`"
 
     assert False
 
@@ -164,14 +174,17 @@ def shnty_propagator(opspec):
     ```
     @shnty_propagator(operator.matmul)
     def _(x, y):
-      return AbstractValue(x.ty, (x.shape[0], y.shape[1]), x.dtype)
+      x_shape = fx_shape(x)
+      y_shape = fx_shape(y)
+      return AbstractTensor((x_shape[0], y_shape[1]), x.dtype)
     ```
 
     And for transpose (again ignoring broadcast etc), might look like
     ```
-    @shnty_propagator((torch.Tensor, "t"))
+    @shnty_propagator(torch.Tensor.T)
     def _(x):
-      return AbstractValue(x.ty, (x.shape[1], x.shape[0]), x.dtype)
+      x_shape = fx_shape(x)
+      return AbstractTensor((x_shape[1], x_shape[0]), x.dtype)
     ```
 
 
@@ -180,12 +193,13 @@ def shnty_propagator(opspec):
     def the_decorator(the_propagator):
         shnty_propagator_register(opspec, the_propagator)
         # Override name, normally just '_'
-        the_propagator.__name__ = (
-            f"{the_propagator.__name__}<shnty_propagator({_opspec_to_str(opspec)})>"
-        )
-        the_propagator.__qualname__ = (
-            the_propagator.__module__ + "." + the_propagator.__name__
-        )
+        if the_propagator.__name__ == "_":
+            the_propagator.__name__ = (
+                f"{the_propagator.__name__}<shnty_propagator({_opspec_to_str(opspec)})>"
+            )
+            the_propagator.__qualname__ = (
+                the_propagator.__module__ + "." + the_propagator.__name__
+            )
 
         return the_propagator  # normally just gets assigned to '_'
 
@@ -194,26 +208,20 @@ def shnty_propagator(opspec):
 
 # ================= Use AbstractValue in FX tracing ================
 class AbstractValueProxy(tfx.Proxy):
-    TAG = "shnty"
+    TAG = "abstract_value"
 
-    def __init__(self, node, tracer, shnty):
+    def __init__(self, node, tracer, abval):
         super().__init__(node, tracer)
         assert self.TAG not in node.meta
-        node.meta[self.TAG] = shnty
+        node.meta[self.TAG] = abval
 
         # TODO: Be careful about namespace pollution here - a Proxy could be anything
         # e.g. a thing which has a ".node_" field...
-        self.shnty_node_ = node
+        self.abval_node_ = node
 
-    # Provide torch.Tensor properties
     @property
     def shape(self):
-        shnty = self.shnty_node_.meta[self.TAG]
-        return shnty.shape
-
-    @property
-    def T(self):
-        return self.t()
+        return self.abval_node_.meta[self.TAG].shape
 
 
 def fx_get_abstract_value_or_value(x):
@@ -224,26 +232,43 @@ def fx_get_abstract_value_or_value(x):
         return x.meta[AbstractValueProxy.TAG]
 
     if isinstance(x, tfx.Proxy):
-        return x.shnty_node_.meta[AbstractValueProxy.TAG]
+        return fx_get_abstract_value_or_value(x.abval_node_)
 
     # It's not an FX object.
     return x
 
 
-def fx_type(x):
+# Shape
+def fx_shape(a):
     """
-    Return the type of a value or Proxy
+    Get shape of an object which might be a torch Tensor, or an AbstractTensor,
+    or a scalar.
     """
-    if isinstance(x, AbstractValue):
-        return x.ty
-    else:
-        return type(x)
+    a = fx_get_abstract_value_or_value(a)
+
+    if isinstance(a, (AbstractTensor, torch.Tensor)):
+        return a.shape
+    return ()  # Assume scalar e.g. 2.2 * torch.rand(2,3)
+
+
+# Shape
+def fx_type(a):
+    """
+    Get shape of an object which might be an AbstractValue
+    """
+    a = fx_get_abstract_value_or_value(a)
+
+    if isinstance(a, AbstractValue):
+        return a.ty
+    return type(a)
 
 
 def fx_is_tensor(x):
     """
     Return true if x is a Tensor or a tensor Proxy
     """
+    x = fx_get_abstract_value_or_value(x)
+
     return isinstance(x, torch.Tensor) or x.isTensor
 
 
@@ -254,7 +279,7 @@ def justone(iter):
 
 
 _log = lambda x: ...
-x_log = print
+_log = print
 
 
 class AbstractValueTracer(tfx.Tracer):
@@ -268,36 +293,50 @@ class AbstractValueTracer(tfx.Tracer):
         if node.op == "placeholder":
             if self.aargs_used >= len(self.aargs):
                 raise ValueError("Not enough aargs passed to shnty_trace")
-            shnty = self.aargs[self.aargs_used]
+            abval = self.aargs[self.aargs_used]
             self.aargs_used += 1
-            if isinstance(shnty, AbstractValue):
-                return AbstractValueProxy(node, self, shnty)
+            if isinstance(abval, AbstractValue):
+                return AbstractValueProxy(node, self, abval)
             else:
-                return shnty
+                return abval
 
         if node.op in ("call_function", "call_method"):
             # Get arg shntys
             aargs_or_vals = tuple(
                 fx_get_abstract_value_or_value(self._inline_const(x)) for x in node.args
             )
+            ty0 = fx_type(aargs_or_vals[0])
 
             # Make lookup key
             if node.op == "call_function":
-                key = node.target
+                if node.target == getattr:
+                    assert len(aargs_or_vals) == 2
+                    attr = node.args[1]
+                    assert isinstance(attr, str)
+                    if attr == "shape":
+                        raise NotImplementedError(
+                            "To use shnty_trace, consider using `fx_shape(x)` instead of `x.shape`"
+                        )
+
+                    key = getattr(ty0, node.args[1])
+                    assert isinstance(key, GetSetDescriptorType)
+                    aargs_or_vals = aargs_or_vals[:1]  # drop attr
+                else:
+                    key = node.target
             elif node.op == "call_method":
-                key = (aargs_or_vals[0].ty, node.target)
+                key = (ty0, node.target)
             else:
                 assert False
 
             if key not in _shnty_propagator_dict:
-                raise NotImplementedError(
-                    f"Need to implement `shnty_propagate` for {_opspec_to_str(key)}"
-                )
+                msg = f"Need to implement `shnty_propagate` for {_opspec_to_str(key)}"
+                print(msg)
+                raise NotImplementedError(msg)
 
             # Call the propagator
-            shnty = _shnty_propagator_dict[key](*aargs_or_vals)
-            assert_shnty_ok(f"shnty_propagate[{_opspec_to_str(key)}]", shnty)
-            return AbstractValueProxy(node, self, shnty)
+            abval = _shnty_propagator_dict[key](*aargs_or_vals)
+            assert_shnty_ok(f"shnty_propagate[{_opspec_to_str(key)}]", abval)
+            return AbstractValueProxy(node, self, abval)
 
         raise NotImplementedError(f"AbstractValueTracer proxy for {node.op}")
 
@@ -344,5 +383,6 @@ def get_return_abstract_value(gm: tfx.GraphModule):
     for n in reversed(gm.graph.nodes):
         assert n.op == "output"
         return fx_get_abstract_value_or_value(n.args[0])
+
 
 import fx_shnty_propagators

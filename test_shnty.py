@@ -5,6 +5,7 @@ from icecream import ic
 
 from fx_shnty import (
     abstractify,
+    fx_shape,
     get_return_abstract_value,
     shnty_trace,
     _shnty_propagator_dict,
@@ -14,10 +15,18 @@ from fx_print import fx_print
 
 
 def test_shnty_0():
-    def test(op, *args):
-        val = op(*(v for v, _ in args))
+    def fn_test(op, *args, **kwargs):
+        val = op(*(v for v, _ in args), **kwargs)
         shntys = [vors for _, vors in args]
-        sh = _shnty_propagator_dict[op](*shntys)
+        sh = _shnty_propagator_dict[op](*shntys, **kwargs)
+        assert abstractify(val) == sh
+
+    def meth_test(method, arg0, *args, **kwargs):
+        op = getattr(arg0[0], method)
+        val = op(*(v[0] for v in args), **kwargs)
+        shntys = [vors[1] for vors in (arg0, *args)]
+        key = (type(arg0[0]), method)
+        sh = _shnty_propagator_dict[key](*shntys, **kwargs)
         assert abstractify(val) == sh
 
     def v(x):
@@ -27,10 +36,20 @@ def test_shnty_0():
         return x, abstractify(x)
 
     for f1 in (s, v):
+        fn_test(torch.sum, f1(torch.randn(3, 4)))
+        fn_test(torch.sum, f1(torch.randn(3, 4)), dim=(1,))
+        fn_test(torch.sum, f1(torch.randn(3, 4)), dim=(1, 0))
+        meth_test("sum", f1(torch.randn(3, 4)))
+        meth_test("sum", f1(torch.randn(3, 4)), dim=(1,))
+        meth_test("reshape", f1(torch.randn(3, 4)), v([2, 6]))
+
+    for f1 in (s, v):
         for f2 in (s, v):
-            test(operator.mul, f1(torch.randn(3, 4)), f2(torch.randn(3, 4)))
-            test(operator.mul, f1(torch.randn(3, 4)), f2(5))
-            test(operator.mul, f1(torch.randn(3, 4)), f2(5.5))
+            fn_test(operator.mul, f1(torch.randn(3, 4)), f2(torch.randn(3, 4)))
+            fn_test(operator.mul, f1(torch.randn(3, 4)), f2(5))
+            fn_test(operator.mul, f1(torch.randn(3, 4)), f2(5.5))
+
+            fn_test(operator.matmul, f1(torch.randn(3, 5)), f2(torch.randn(5, 2)))
 
 
 def test_shnty_1():
@@ -88,7 +107,7 @@ def test_shnty_2():
 
     # Test tensor constants
     def foo_c(x):
-        I = torch.eye(x.shape[1])
+        I = torch.eye(fx_shape(x)[1])
         return x @ I @ x.T
 
     ret = foo_c(x)

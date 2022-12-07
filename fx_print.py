@@ -8,35 +8,43 @@ def _commajoin(vs):
 def fn_name(f):
     n = f.__name__
     if hasattr(f, "__module__") and f.__module__ != "_operator":
-        return f"{f.__module__}.{n}"
-    else:
-        return n
+        n = f"{f.__module__}.{n}"
+
+    if hasattr(f, "__code__"):
+        n += f"[{f.__code__.co_filename}:{f.__code__.co_firstlineno}]"
+
+    return n
 
 
 def fx_print_node(node, gm=None, name2ord=None):
     def argstr(a):
-        if name2ord and isinstance(a, torch.fx.Node):
-            return name2ord[a.name]
-        return str(a)
+        if isinstance(a, tuple):
+            return "(" + _commajoin(map(argstr, a)) + ")"
+        if isinstance(a, torch.fx.Node):
+            return name2ord[a.name] if name2ord else a.name
+        if isinstance(a, (int, float)):
+            return f"{type(a).__name__}({a})"
 
-    args = [argstr(a) for a in node.args]
-    comment = f" # {node.meta['shnty']}" if "shnty" in node.meta else ""
+        return str(a) + f"[{type(a)}]"
+
+    argstrs = [argstr(a) for a in node.args]
+    comment = f" # {node.meta['shnty']}" if "shnty" in node.meta else " # nosh"
 
     if node.op == "output":
-        return f"return {argstr(args[0])}{comment}"
+        return f"return {argstrs[0]}{comment}"
 
     lhs = argstr(node)
     if node.op == "placeholder":
         return f"{lhs} = {node.target}{comment}"
 
     if node.op == "call_function":
-        return f"{lhs} = {fn_name(node.target)}({_commajoin(args)}){comment}"
+        return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
 
     if node.op == "call_method":
-        return f'{lhs} = {argstr(args[0])}.{node.target}({",".join(args[1:])}){comment}'
+        return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){comment}"
 
     if node.op == "get_attr":
-        assert len(args) == 0
+        assert len(argstrs) == 0
         if gm:
             val = getattr(gm, node.target)
             valstr = str(val).replace("\n", "\\n")[:40]
@@ -44,7 +52,7 @@ def fx_print_node(node, gm=None, name2ord=None):
             valstr = "pass gm for value"
         return f"{lhs} = {node.target} # {valstr}"
 
-    return f'# unhandled {node.op} {argstr(node)} = {node.target}({",".join(args)}){comment}'
+    return f"# unhandled {node.op} {argstr(node)} = {node.target}({_commajoin(argstrs)}){comment}"
 
 
 def fx_print(gm):

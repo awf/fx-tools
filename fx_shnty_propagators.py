@@ -1,9 +1,12 @@
 import operator
+import numpy
 import torch
 
 from fx_shnty import (
     AbstractValue,
     AbstractTensor,
+    fx_shape,
+    fx_type,
     fx_is_tensor,
     shnty_propagator,
     shnty_propagator_register,
@@ -12,20 +15,14 @@ from fx_shnty import (
 # --------------  Broadcasting ops (e.g. add, mul, sin..)
 
 
-def shnty_propagate_broadcast_aux(op, *args):
+def shnty_propagate_broadcast_aux(op, dty, *args):
     """
     Propagate OP, with normal Pytorch broadcasting semantics
     ARGS may be AbstractValue or values
     """
     msg = f"shnty_propagate_broadcast_aux {op}"
 
-    # Shape
-    def get_shape(a):
-        if isinstance(a, (AbstractTensor, torch.Tensor)):
-            return a.shape
-        return ()  # Assume scalar e.g. 2.2 * torch.rand(2,3)
-
-    shapes = [get_shape(a) for a in args]
+    shapes = [fx_shape(a) for a in args]
     sh = torch.broadcast_shapes(*shapes)
 
     # Type
@@ -36,18 +33,19 @@ def shnty_propagate_broadcast_aux(op, *args):
             return a.ty
         return torch.tensor(a).dtype
 
-    dty = get_dtype(args[0])
-    for arg in args:
-        dty = torch.promote_types(dty, get_dtype(arg))
+    if not dty:
+        dty = get_dtype(args[0])
+        for arg in args:
+            dty = torch.promote_types(dty, get_dtype(arg))
 
     return AbstractTensor(sh, dty)
 
 
-def shnty_propagate_broadcast(op):
+def shnty_propagate_broadcast(op, dty):
     """
     Make a propagator for OP, with normal Pytorch broadcasting semantics
     """
-    return lambda *args: shnty_propagate_broadcast_aux(op, *args)
+    return lambda *args: shnty_propagate_broadcast_aux(op, dty, *args)
 
 
 for op in (
@@ -55,15 +53,40 @@ for op in (
     operator.truediv,
     operator.add,
     operator.neg,
+    torch.ones_like,
     torch.relu,
     torch.atan2,
     torch.sin,
     torch.cos,
+    torch.neg,
 ):
-    shnty_propagator_register(op, shnty_propagate_broadcast(op))
+    shnty_propagator_register(op, shnty_propagate_broadcast(op, None))
 
 for method in ("neg", "sin", "cos"):
-    shnty_propagator_register((torch.Tensor, method), shnty_propagate_broadcast(op))
+    shnty_propagator_register(
+        (torch.Tensor, method), shnty_propagate_broadcast(op, None)
+    )
+
+# --------------  boolean ops
+for op in (
+    operator.lt,
+    operator.le,
+    operator.eq,
+    operator.ne,
+    operator.ge,
+    operator.gt,
+):
+    shnty_propagator_register(op, shnty_propagate_broadcast(op, torch.bool))
+
+# --------------  reshape
+
+
+@shnty_propagator((torch.Tensor, "reshape"))
+def _(x, shape):
+    assert fx_is_tensor(x)
+    assert numpy.prod(shape) == numpy.prod(x.shape)
+    return AbstractTensor(torch.Size(shape), x.dtype)
+
 
 # --------------  torch.trace
 
@@ -81,6 +104,7 @@ def _(x):
 # --------------  Tensor.t()
 
 
+@shnty_propagator(torch.Tensor.T)
 @shnty_propagator((torch.Tensor, "t"))
 def _(x):
     if len(x.shape) != 2:
@@ -94,6 +118,7 @@ def _(x):
 # --------------  @ matmul
 
 
+@shnty_propagator((torch.Tensor, "matmul"))
 @shnty_propagator(operator.matmul)
 def _(A, B):
     assert fx_is_tensor(A) and fx_is_tensor(B)
@@ -117,8 +142,18 @@ def _(x, dim=None):
     assert fx_is_tensor(x)
 
     if not dim or len(dim) == 0:
-        sh = ()  # sum over all elements, return type is scalar
-        return AbstractValue(x.dtype)
+        sh = torch.Size()  # sum over all elements, return type is scalar
+    else:
+        sh = torch.Size(s for i, s in enumerate(x.shape) if i not in dim)
 
-    sh = torch.Size(s for i, s in enumerate(x.shape) if i not in dim)
     return AbstractTensor(sh, x.dtype)
+
+
+@shnty_propagator(torch.transpose)
+def _(x, m, n):
+    assert fx_is_tensor(x)
+    sh = list(x.shape)
+    tmp = sh[m]
+    sh[m] = sh[n]
+    sh[n] = tmp
+    return AbstractTensor(torch.Size(tuple(sh)), x.dtype)

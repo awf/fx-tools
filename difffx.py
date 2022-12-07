@@ -1,4 +1,4 @@
-from typing import Any
+from types import GetSetDescriptorType
 from collections import defaultdict
 import torch
 
@@ -6,8 +6,16 @@ from icecream import ic
 
 import torch.fx as tfx
 
-from fx_print import fx_print
-from fx_shnty import shnty_trace, get_return_abstract_value
+from fx_print import fx_print, fn_name
+from fx_shnty import (
+    abstractify,  # for re-export
+    AbstractValue,
+    shnty_trace,
+    get_return_abstract_value,
+    fx_type,
+    fx_shape,
+    _opspec_to_str,
+)
 
 
 def ensure_tuple(x):
@@ -16,15 +24,11 @@ def ensure_tuple(x):
     return (x,)
 
 
-import fx_shnty
-
-abstractify = fx_shnty.abstractify
-
 # ----------------
 
 
 # A mapping from python function to (forward, backward)
-ad_map = {}
+_ad_map = {}
 
 
 def vjp(f, sample_input):
@@ -60,6 +64,18 @@ def vjp(f, sample_input):
     ```
     """
 
+    # Check that sample inputs are tuples, and that at least one is an AbstractValue
+    if not isinstance(sample_input, tuple):
+        raise ValueError("sample input should be a tuple of [abstract] values")
+    if not any([isinstance(a, AbstractValue) for a in sample_input]):
+        raise ValueError("sample input should contain at least one abstract value")
+
+    if len(sample_input) > 1:
+        raise ValueError("Annoyingly, vjp doesn't work for multiple inputs")
+        # Problem is that the interpreter below can't sensibly deal with *args
+        # A Solution: rewrite the top level of `trace` (called by shnty_trace)
+        # to not use co_argcount, but to use the length of the supplied args.
+
     class ADInterpreter(torch.fx.Interpreter):
         """
         This interpreter runs through the forward transformation,
@@ -74,12 +90,34 @@ def vjp(f, sample_input):
         def call_function(self, target, args, kwargs):
             assert kwargs == None or len(kwargs) == 0
 
-            if target not in ad_map:
-                raise NotImplementedError(f"Need VJP rule for {target}")
+            # translate getattrs
+            if target == getattr:
+                assert len(args) == 2
+                attr = args[1]
+                assert isinstance(attr, str)
+                if attr == "shape":
+                    raise NotImplementedError(
+                        "To use diffx, consider using `fx_shape(x)` instead of `x.shape`"
+                    )
+
+                # get the class method.  If the class has overridden __getattr__,
+                # this may fail.  Might need to whitelist types where this is OK,
+                # e.g. torch.Tensor
+                target = getattr(fx_type(args[0]), args[1])
+                assert isinstance(target, GetSetDescriptorType)
+                args = args[:1]  # drop attr
+
             # Look up forward/backward functions in `ad_map`
-            fwd, bwd = ad_map[target]
+            if target not in _ad_map:
+                msg = f"Need VJP rule for {_opspec_to_str(target)}"
+                print(msg)
+                raise NotImplementedError(msg)
+
+            fwd, bwd = _ad_map[target]
+
             # Call the fwd function, getting proxies for returns
             val, aux = fwd(*args)
+
             # In the backward pass, we will compute:
             #  d[args[0]],...,d[args[-1]] = bwd(aux, d{val})
             # So remember: (args, bwd, aux, val)
@@ -89,7 +127,8 @@ def vjp(f, sample_input):
             return val
 
         def call_method(self, target, args, kwargs):
-            raise NotImplementedError  # use method_to_function
+            key = (fx_type(args[0]), target)
+            return self.call_function(key, args, kwargs)
 
         def get_attr(self, target, args, kwargs):
             raise NotImplementedError  # TODO
@@ -98,6 +137,8 @@ def vjp(f, sample_input):
     f_trace = shnty_trace(f, sample_input)
 
     fx_print(f_trace)
+
+    # Get abstract return value
     ret_shnty = get_return_abstract_value(f_trace)
 
     # This is the "template" function for the VJP
@@ -106,27 +147,47 @@ def vjp(f, sample_input):
         ad = ADInterpreter(f_trace)
         ret = ad.run(x)
         # Build a dict to hold derivatives
-        d = defaultdict(lambda: 0)
+        d = {}
         # Add dret to derivatives dict
         d[ret] = dret
         # And run down the stack...
         for (args, bwd, aux, val) in reversed(ad.stack):
-            dargs = bwd(aux, d[val])
+            dval = d[val] if val in d else torch.zeros(fx_shape(val))
+            dargs = bwd(aux, dval)
             for (a, da) in zip(args, ensure_tuple(dargs)):
-                d[a] += da
+                if fx_shape(a) != fx_shape(da):
+                    raise ValueError(
+                        f"Derivative has different shape from arg: "
+                        + f"{fx_shape(da)} != {fx_shape(a)}, "
+                        + f"in {fn_name(bwd)}"
+                    )
+                if a in d:
+                    d[a] = d[a] + da
+                else:
+                    d[a] = da
         # And return ret and J'*dret
         return ret, d[x]
 
-    return shnty_trace(vjp_template, sample_input + (ret_shnty,))
+    vjp_args = sample_input + (ret_shnty,)
+
+    return shnty_trace(vjp_template, vjp_args)
 
 
-import vjp_rules
+def register_vjp_rule(opspec, fwd, bwd):
+    """
+    Register fwd and bwd for function f or method (Type, "foo")
+    """
+
+    assert opspec not in _ad_map
+    _ad_map[opspec] = (fwd, bwd)
 
 
-def vjp_linear(f):
+def register_vjp_rule_linear(f):
     """
     Construct fwd and bwd for f a linear function of x
     """
+
+    assert not isinstance(f, tuple)
 
     def fwd(*args):
         return f(*args), None
@@ -134,20 +195,50 @@ def vjp_linear(f):
     def bwd(_, dret):
         return f(dret)
 
-    return fwd, bwd
+    register_vjp_rule(f, fwd, bwd)
 
 
-import operator
+def set_name(func, name):
+    func.__name__ = name
+    func.__qualname__ = func.__module__ + "." + name
 
-# TODO: a decorator like shnty_propagate?
-ad_map[operator.neg] = vjp_linear(operator.neg)
-ad_map[operator.add] = (vjp_rules.add_fwd, vjp_rules.add_bwd)
-ad_map[operator.mul] = (vjp_rules.mul_fwd, vjp_rules.mul_bwd)
-ad_map[operator.matmul] = (vjp_rules.matmul_fwd, vjp_rules.matmul_bwd)
-ad_map[torch.neg] = vjp_linear(torch.neg)
-ad_map[torch.sin] = (vjp_rules.sin_fwd, vjp_rules.sin_bwd)
-ad_map[torch.relu] = (vjp_rules.relu_fwd, vjp_rules.relu_bwd)
-ad_map[torch.transpose] = (vjp_rules.transpose_fwd, vjp_rules.transpose_bwd)
-ad_map[torch.diag] = (vjp_rules.diag_fwd, vjp_rules.diag_bwd)
-ad_map[vjp_rules.scale] = (vjp_rules.scale_fwd, vjp_rules.scale_bwd)
-ad_map[torch.trace] = (vjp_rules.trace_fwd, vjp_rules.trace_bwd)
+
+def vjp_rule_fwd(opspec):
+    """ """
+
+    def the_decorator(func):
+        if opspec in _ad_map:
+            assert _ad_map[opspec][0] == None  # Fwd not yet registered
+            _ad_map[opspec][0] = func
+        else:
+            _ad_map[opspec] = [func, None]
+
+        # Override name, normally just '_'
+        if func.__name__ == "_":
+            set_name(func, f"vjp_fwd<{_opspec_to_str(opspec)}>")
+
+        return func  # normally just gets assigned to '_'
+
+    return the_decorator
+
+
+def vjp_rule_bwd(opspec):
+    """ """
+
+    def the_decorator(func):
+        if opspec in _ad_map:
+            assert _ad_map[opspec][1] == None  # Bwd not yet registered
+            _ad_map[opspec][1] = func
+        else:
+            _ad_map[opspec] = [None, func]
+
+        # Override name, normally just '_'
+        if func.__name__ == "_":
+            set_name(func, f"vjp_bwd<{_opspec_to_str(opspec)}>")
+
+        return func  # normally just gets assigned to '_'
+
+    return the_decorator
+
+
+import vjp_rules

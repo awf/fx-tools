@@ -31,6 +31,9 @@ def vjp_check_fwdbwd(f, f_fwd, f_bwd, x):
     dret = pt_rand_like(ret_given)
     vjp_given = f_bwd(aux, dret)
 
+    assert isinstance(x, tuple)
+    x = tuple(torch.tensor(a) if isinstance(a, float) else a for a in x)
+
     if isinstance(x, tuple) and len(x) == 1:
         x_for_torch = x[0]
     else:
@@ -100,7 +103,9 @@ def vjp_check_fd(f, f_vjp, x, delta=1e-4, tol=1e-3):
         return torch.dot(torch.flatten(a), torch.flatten(b))
 
     lhs = dot(dret, f(x + delta * dx) - f(x - delta * dx)) / (2 * delta)
-    rhs = dot(f_vjp(x, dret), dx)
+
+    fval, fvjp = f_vjp(x, dret)
+    rhs = dot(fvjp, dx)
     print(f"vjp_check_fd: FD={lhs:.4f}, Code={rhs:.4f}, diff={lhs-rhs:.4f}")
 
     torch.testing.assert_close(lhs, rhs, atol=tol, rtol=tol)
@@ -109,9 +114,10 @@ def vjp_check_fd(f, f_vjp, x, delta=1e-4, tol=1e-3):
 def test_fd():
     # Function to vjp
     def foo(x):
-        a = torch.sin(x)
+        h = torch.trace(x)
+        a = torch.sin(h) + x
         return a
 
-    foo_vjp = lambda x, dret: torch.autograd.functional.vjp(foo, x, dret)[1]
+    foo_vjp = lambda x, dret: torch.autograd.functional.vjp(foo, x, dret)
 
     vjp_check_fd(foo, foo_vjp, torch.randn(3, 3))

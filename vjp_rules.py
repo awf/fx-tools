@@ -1,11 +1,28 @@
 import operator
 import torch
 from vjp_check import vjp_check_fwdbwd
-from fx_shnty import shnty_propagator
+from fx_shnty import shnty_propagator, fx_shape
 from icecream import ic
+from difffx import (
+    vjp_rule_fwd,
+    vjp_rule_bwd,
+    register_vjp_rule_linear,
+    register_vjp_rule,
+    _ad_map,
+)
 
 # Define a bunch of manual vjps
 # Ultimately parse these out of https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml
+
+
+def check_op(op, *args):
+    fwd, bwd = _ad_map[op]
+    if isinstance(op, tuple):
+        op = getattr(op[0], op[1])  # Decode method
+        vjp_check_fwdbwd(op, fwd, bwd, args)
+    else:
+        vjp_check_fwdbwd(op, fwd, bwd, args)
+
 
 # SCALE
 @torch.fx.wrap
@@ -14,15 +31,17 @@ def scale(a, T):
 
 
 @shnty_propagator(scale)
-def _(A, B):
-    return B
+def _(A_shnty, T_shnty):
+    return T_shnty
 
 
-def scale_fwd(a, T):
+@vjp_rule_fwd(scale)
+def _(a, T):
     return scale(a, T), (a, T)
 
 
-def scale_bwd(aux, dret):
+@vjp_rule_bwd(scale)
+def _(aux, dret):
     # T: mxn
     # dret: mxn
     a, T = aux
@@ -32,9 +51,7 @@ def scale_bwd(aux, dret):
 
 
 def test_scale():
-    vjp_check_fwdbwd(
-        scale, scale_fwd, scale_bwd, (torch.tensor(1.123), torch.randn(3, 4))
-    )
+    check_op(scale, 1.3, torch.randn(3, 4))
 
 
 # BS
@@ -59,7 +76,7 @@ def shape_to_expander(result, shape):
     return expander
 
 
-def test_broadcast_shapes():
+def test_shape_to_expander():
     def assertEqual(A, B):
         if isinstance(A, torch.Tensor):
             assert torch.equal(A, B)
@@ -96,44 +113,105 @@ def test_broadcast_shapes():
         assertEqual(res1, res2)
 
 
+# How to contract derivatives for broadcasting ops
+# TODO: FX transform to remove implicit broadcasting
+def contract_over_expanded_dims(X, expander):
+    dims_to_sum = tuple(i for i, v in enumerate(expander) if v != -1)
+    if len(dims_to_sum):
+        return X.sum(dims_to_sum)
+    else:
+        return X
+
+
+def contract_after_broadcast(A, B, dA, dB):
+    A_shape = fx_shape(A)
+    B_shape = fx_shape(B)
+    shape = torch.broadcast_shapes(A_shape, B_shape)
+
+    dAcontracted = contract_over_expanded_dims(dA, shape_to_expander(shape, A_shape))
+    dBcontracted = contract_over_expanded_dims(dB, shape_to_expander(shape, B_shape))
+    return (dAcontracted.reshape(A_shape), dBcontracted.reshape(B_shape))
+
+
+# Add
+@vjp_rule_fwd(operator.add)
+def _(A, B):
+    ret = A + B
+    # inlining contract_after_broadcast so we don't stash A and B
+    A_shape = fx_shape(A)
+    B_shape = fx_shape(B)
+    shape = torch.broadcast_shapes(A_shape, B_shape)
+    assert ret.shape == shape
+
+    expanderA = shape_to_expander(shape, A_shape)
+    expanderB = shape_to_expander(shape, B_shape)
+    return ret, (A_shape, B_shape, expanderA, expanderB)
+
+
+@vjp_rule_bwd(operator.add)
+def _(aux, dret):
+    A_shape, B_shape, expanderA, expanderB = aux
+    dA = contract_over_expanded_dims(dret, expanderA)
+    dB = contract_over_expanded_dims(dret, expanderB)
+    # Reshapes are to canonicalize e.g. Size([]) vs Size([1])
+    return (dA.reshape(A_shape), dB.reshape(B_shape))
+
+
+def test_add():
+    check_op(operator.add, *(torch.randn(3, 4), torch.randn(3, 4)))
+    check_op(operator.add, *(torch.randn(1), torch.randn(3, 4)))
+    check_op(operator.add, *(torch.randn(3, 1), torch.randn(3, 4)))
+
+
 # MUL
 
 
-def mul_fwd(A, B):
+@vjp_rule_fwd(operator.mul)
+def _(A, B):
     return A * B, (A, B)
 
 
-def mul_bwd(aux, dret):
+@vjp_rule_bwd(operator.mul)
+def _(aux, dret):
     A, B = aux
-    shape = torch.broadcast_shapes(A.shape, B.shape)
-
-    def contract_over_expanded_dims(X, expander):
-        dims_to_sum = tuple(i for i, v in enumerate(expander) if v != -1)
-        if len(dims_to_sum):
-            return X.sum(dims_to_sum)
-        else:
-            return X
-
-    dA = contract_over_expanded_dims(B * dret, shape_to_expander(shape, A.shape))
-    dB = contract_over_expanded_dims(A * dret, shape_to_expander(shape, B.shape))
-    return (dA, dB)
+    return contract_after_broadcast(A, B, B * dret, A * dret)
 
 
 def test_mul():
-    vjp_check_fwdbwd(
-        operator.mul, mul_fwd, mul_bwd, (torch.randn(3, 4), torch.randn(3, 4))
-    )
-    vjp_check_fwdbwd(
-        operator.mul, mul_fwd, mul_bwd, (torch.tensor(3.14159), torch.randn(3, 4))
-    )
-    # works for difffx, not for torch:    vjp_check_fwdbwd(operator.mul, mul_fwd, mul_bwd, (3.14159, torch.randn(3, 4)))
+    check_op(operator.mul, *(torch.randn(3, 4), torch.randn(3, 4)))
+    check_op(operator.mul, *(torch.tensor(3.14159), torch.randn(3, 4)))
+    # works for difffx, not for torch:    check_op(operator.mul, *(3.14159, torch.randn(3, 4)))
 
 
-def matmul_fwd(A, B):
+# Div
+@vjp_rule_fwd(operator.truediv)
+def _(A, B):
+    return A / B, (A, B)
+
+
+@vjp_rule_bwd(operator.truediv)
+def _(aux, dret):
+    A, B = aux
+    return contract_after_broadcast(A, B, dret / B, -dret * A / (B * B))
+
+
+def test_div():
+    check_op(operator.truediv, *(torch.randn(3, 4), torch.rand(3, 4) + 0.1))
+    check_op(operator.truediv, *(torch.randn(3, 1), torch.rand(3, 4) + 0.1))
+    check_op(operator.truediv, *(torch.randn(3, 4), torch.rand(1, 4) + 0.1))
+    check_op(operator.truediv, *(torch.randn(3, 4), 0.1))
+
+
+# MatMul
+
+
+@vjp_rule_fwd(operator.matmul)
+def _(A, B):
     return A @ B, (A, B)
 
 
-def matmul_bwd(aux, dret):
+@vjp_rule_bwd(operator.matmul)
+def _(aux, dret):
     # A: mxp
     # B: pxn
     # dret: mxn
@@ -144,89 +222,140 @@ def matmul_bwd(aux, dret):
 
 
 def test_matmul():
-    vjp_check_fwdbwd(
-        operator.matmul, matmul_fwd, matmul_bwd, (torch.randn(3, 4), torch.randn(4, 5))
-    )
+    check_op(operator.matmul, *(torch.randn(3, 4), torch.randn(4, 5)))
+    # TODO: check_op(operator.matmul, *(torch.randn(2, 3, 4), torch.randn(2, 4, 5)))
 
 
-# Add
-def add_fwd(A, B):
-    return A + B, None
+# Sum
+
+# def _(x, dim=None):
+#     assert fx_is_tensor(x)
+
+#     if not dim or len(dim) == 0:
+#         sh = ()  # sum over all elements, return type is scalar
+#         return AbstractValue(x.dtype)
+
+#     sh = torch.Size(s for i, s in enumerate(x.shape) if i not in dim)
+#     return AbstractTensor(sh, x.dtype)
 
 
-def add_bwd(aux, dret):
-    return dret, dret
+@vjp_rule_fwd(torch.sum)
+@vjp_rule_fwd((torch.Tensor, "sum"))
+def _(A, dim=None):
+    return torch.sum(A, dim), (dim, A.shape)
 
 
-def test_add():
-    vjp_check_fwdbwd(
-        operator.add, add_fwd, add_bwd, (torch.randn(3, 4), torch.randn(3, 4))
-    )
+@vjp_rule_bwd(torch.sum)
+@vjp_rule_bwd((torch.Tensor, "sum"))
+def _(aux, dret):
+    dim, shape = aux
+
+    assert not dim  # Need more amusing logic to deal with dim
+
+    return dret * torch.ones(shape)
+
+
+def test_sum():
+    check_op(torch.sum, *(torch.randn(3, 4),))
 
 
 # Sin
-def sin_fwd(x):
+@vjp_rule_fwd(torch.sin)
+def _(x):
     return (torch.sin(x), x)
 
 
-def sin_bwd(aux_is_x, dret):
+@vjp_rule_bwd(torch.sin)
+def _(aux_is_x, dret):
     return torch.cos(aux_is_x) * dret
 
 
 def test_sin():
-    vjp_check_fwdbwd(torch.sin, sin_fwd, sin_bwd, (torch.randn(3, 4),))
+    check_op(torch.sin, *(torch.randn(3, 4),))
+
+
+# Atan2
+@vjp_rule_fwd(torch.atan2)
+def _(x, y):
+    return torch.atan2(x, y), (x, y)
+
+
+@vjp_rule_bwd(torch.atan2)
+def _(aux, dret):
+    x, y = aux
+    tmp = dret / (x * x + y * y)
+    dx = y * tmp
+    dy = -x * tmp
+    return (dx, dy)
+
+
+def test_atan2():
+    check_op(torch.atan2, *(torch.randn(3, 4), torch.randn(3, 4)))
 
 
 # Relu forward pass - save sign(x), could save as uint8 if we wanted to save memory
-def relu_fwd(x):
+@vjp_rule_fwd(torch.relu)
+def _(x):
     return torch.relu(x), (x > 0)
 
 
-def relu_bwd(aux, dret):
+@vjp_rule_bwd(torch.relu)
+def _(aux, dret):
     return aux * dret
 
 
 def test_relu():
-    vjp_check_fwdbwd(torch.relu, relu_fwd, relu_bwd, (torch.randn(3, 4),))
+    check_op(torch.relu, *(torch.randn(3, 4),))
 
 
-# Neg
-def neg_fwd(x):
+@vjp_rule_fwd((torch.Tensor, "neg"))
+def _(x):
     return -x, None
 
 
-def neg_bwd(aux, dret):
+@vjp_rule_bwd((torch.Tensor, "neg"))
+def _(aux, dret):
     return -dret
 
 
+# Neg
+register_vjp_rule_linear(operator.neg)
+register_vjp_rule_linear(torch.neg)
+
+
 def test_neg():
-    vjp_check_fwdbwd(torch.neg, neg_fwd, neg_bwd, (torch.randn(3, 4),))
+    check_op(operator.neg, torch.randn(3, 4))
+    check_op(torch.neg, torch.randn(3, 4))
 
 
 # Trace
-def trace_fwd(x):
+@vjp_rule_fwd(torch.trace)
+def _(x):
     return torch.trace(x), x.shape
 
 
-def trace_bwd(x_shape, dret):
+@vjp_rule_bwd(torch.trace)
+def _(x_shape, dret):
     return dret * torch.eye(*x_shape)
 
 
 def test_trace():
-    vjp_check_fwdbwd(torch.trace, trace_fwd, trace_bwd, (torch.randn(3, 3),))
+    check_op(torch.trace, *(torch.randn(3, 3),))
 
 
 # Diag
-def diag_fwd(x):
+@vjp_rule_fwd(torch.diag)
+def _(x):
     return torch.diag(x), x.shape
 
 
-def diag_bwd(shape, dret):
+@vjp_rule_bwd(torch.diag)
+def _(shape, dret):
     return torch.diag(dret)
 
 
 def test_diag():
-    vjp_check_fwdbwd(torch.diag, diag_fwd, diag_bwd, (torch.randn(3, 3),))
+    check_op(torch.diag, *(torch.randn(3, 3),))
 
 
 # transpose
@@ -234,22 +363,30 @@ def transpose(x):
     return torch.transpose(x, 0, 1)
 
 
-def transpose_fwd(x):
+@vjp_rule_fwd(torch.Tensor.T)
+@vjp_rule_fwd((torch.Tensor, "t"))
+@vjp_rule_fwd(transpose)
+def _(x):
     return transpose(x), None
 
 
-def transpose_bwd(aux, dret):
+@vjp_rule_bwd(torch.Tensor.T)
+@vjp_rule_bwd((torch.Tensor, "t"))
+@vjp_rule_bwd(transpose)
+def _(aux, dret):
     return transpose(dret)
 
 
 def test_transpose():
-    vjp_check_fwdbwd(transpose, transpose_fwd, transpose_bwd, (torch.randn(3, 5),))
+    check_op(transpose, *(torch.randn(3, 5),))
 
 
-# def transpose_fwd(x,m,n):
-#     return torch.transpose(x,m,n), (m,n)
+@vjp_rule_fwd(torch.transpose)
+def _(x, m, n):
+    return torch.transpose(x, m, n), (m, n)
 
 
-# def transpose_bwd(aux, dret):
-#     m,n = aux
-#     return (torch.transpose(dret, m,n), None, None)
+@vjp_rule_bwd(torch.transpose)
+def _(aux, dret):
+    m, n = aux
+    return (torch.transpose(dret, m, n), None, None)
