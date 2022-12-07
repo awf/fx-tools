@@ -83,7 +83,7 @@ class AbstractTensor(AbstractValue):
         self.is_nested = False
 
     def __str__(self):
-        return f"abval:Tensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
+        return f"AbTensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
 
     def __repr__(self):
         return str(self)
@@ -135,10 +135,7 @@ def _canonicalize_class(x):
 
 
 def _classname(x):
-    if x.__class__ == torch.Tensor.__class__:
-        return "torch.Tensor"  # not _TensorBase
-    else:
-        return x.__qualname__
+    return _canonicalize_class(x).__qualname__
 
 
 def _opspec_to_str(opspec):

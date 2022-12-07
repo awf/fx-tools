@@ -30,7 +30,7 @@ def fx_print_node(node, gm=None, name2ord=None):
         return str(a) + f"[{type(a)}]"
 
     argstrs = [argstr(a) for a in node.args]
-    comment = f" # {(str(k) + ':' + str(v) for k,v in node.meta.items())}"
+    comment = f" # {','.join(str(k) + ':' + str(v) for k,v in node.meta.items())}"
 
     if node.op == "output":
         return f"return {argstrs[0]}{comment}"
