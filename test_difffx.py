@@ -28,7 +28,7 @@ def my_func(x):
     t = t / torch.sum(t)
     tt = t.T
     tTt = tt @ t
-    # x = x @ tTt
+    x = x @ tTt
     return torch.atan2(t, x)
 
 

@@ -24,6 +24,8 @@ def fx_print_node(node, gm=None, name2ord=None):
             return name2ord[a.name] if name2ord else a.name
         if isinstance(a, (int, float)):
             return f"{type(a).__name__}({a})"
+        if isinstance(a, str):
+            return f"'{a}'"
 
         return str(a) + f"[{type(a)}]"
 
