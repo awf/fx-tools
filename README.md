@@ -12,6 +12,8 @@ Main point of interest is probably the AD pass in https://github.com/awf/fx-tool
 
 Good that we can get type, e.g. to resolve call_method
 
+important that we use getattr(t, "neg")() sometimes instead of torch.Tensor.neg(t) as the latter may defeat monkey patching
+
 ## Shape propagation
 
 This is an aside -- we need shapes for e.g. the gradient of 'trace', so let's

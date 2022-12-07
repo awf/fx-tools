@@ -9,14 +9,22 @@
       "type": "python",
       "request": "launch",
       "program": "${file}",
-      "console": "integratedTerminal",
+      "console": "internalConsole",
+      "justMyCode": true
+    },
+    {
+      "name": "Python: example_transformer",
+      "type": "python",
+      "request": "launch",
+      "program": "example_transformer.py",
+      "console": "internalConsole",
       "justMyCode": false
     },
     {
       "name": "Debug Unit Test",
       "type": "python",
-      "request": "test",
+      "request": "test", // See https://github.com/microsoft/vscode-python/issues/7131
       "justMyCode": false,
-     }
+    }
   ]
 }

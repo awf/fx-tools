@@ -56,32 +56,37 @@ for op in (
     torch.ones_like,
     torch.relu,
     torch.atan2,
+    torch.neg,
     torch.sin,
     torch.cos,
-    torch.neg,
+    torch.Tensor.neg,
+    torch.Tensor.sin,
+    torch.Tensor.cos,
 ):
     shnty_propagator_register(op, shnty_propagate_broadcast(op, None))
 
-for method in ("neg", "sin", "cos"):
-    shnty_propagator_register(
-        (torch.Tensor, method), shnty_propagate_broadcast(op, None)
-    )
-
 # --------------  boolean ops
-for op in (
-    operator.lt,
-    operator.le,
-    operator.eq,
-    operator.ne,
-    operator.ge,
-    operator.gt,
+for op, ty in (
+    (operator.lt, torch.bool),
+    (operator.le, torch.bool),
+    (operator.eq, torch.bool),
+    (operator.ne, torch.bool),
+    (operator.ge, torch.bool),
+    (operator.gt, torch.bool),
+    (torch.Tensor.lt, torch.bool),
+    (torch.Tensor.le, torch.bool),
+    (torch.Tensor.eq, torch.bool),
+    (torch.Tensor.ne, torch.bool),
+    (torch.Tensor.ge, torch.bool),
+    (torch.Tensor.gt, torch.bool),
+    (torch.Tensor.long, torch.int64),
 ):
-    shnty_propagator_register(op, shnty_propagate_broadcast(op, torch.bool))
+    shnty_propagator_register(op, shnty_propagate_broadcast(op, ty))
 
 # --------------  reshape
 
 
-@shnty_propagator((torch.Tensor, "reshape"))
+@shnty_propagator(torch.Tensor.reshape)
 def _(x, shape):
     assert fx_is_tensor(x)
     assert numpy.prod(shape) == numpy.prod(x.shape)
@@ -105,7 +110,7 @@ def _(x):
 
 
 @shnty_propagator(torch.Tensor.T)
-@shnty_propagator((torch.Tensor, "t"))
+@shnty_propagator(torch.Tensor.t)
 def _(x):
     if len(x.shape) != 2:
         raise NotImplementedError(f"check transpose implementation for snhty {x}")
@@ -115,11 +120,25 @@ def _(x):
     return AbstractTensor(sh, x.dtype)
 
 
+# --------------  transpose
+
+
+@shnty_propagator(torch.transpose)
+@shnty_propagator(torch.Tensor.transpose)
+def _(x, m, n):
+    assert fx_is_tensor(x)
+    sh = list(x.shape)
+    tmp = sh[m]
+    sh[m] = sh[n]
+    sh[n] = tmp
+    return AbstractTensor(torch.Size(tuple(sh)), x.dtype)
+
+
 # --------------  @ matmul
 
 
-@shnty_propagator((torch.Tensor, "matmul"))
 @shnty_propagator(operator.matmul)
+@shnty_propagator(torch.Tensor.matmul)
 def _(A, B):
     assert fx_is_tensor(A) and fx_is_tensor(B)
     # m x p times p x n
@@ -136,8 +155,8 @@ def _(A, B):
 # --------------  torch.sum
 
 
-@shnty_propagator((torch.Tensor, "sum"))
 @shnty_propagator(torch.sum)
+@shnty_propagator(torch.Tensor.sum)
 def _(x, dim=None):
     assert fx_is_tensor(x)
 
@@ -149,11 +168,79 @@ def _(x, dim=None):
     return AbstractTensor(sh, x.dtype)
 
 
-@shnty_propagator(torch.transpose)
-def _(x, m, n):
+# --------------  torch.cumsum
+
+
+@shnty_propagator(torch.cumsum)
+@shnty_propagator(torch.Tensor.cumsum)
+def _(x, dim=None):
     assert fx_is_tensor(x)
-    sh = list(x.shape)
-    tmp = sh[m]
-    sh[m] = sh[n]
-    sh[n] = tmp
-    return AbstractTensor(torch.Size(tuple(sh)), x.dtype)
+    return AbstractTensor(fx_shape(x), x.dtype)
+
+
+# --------------  getitem
+
+
+@shnty_propagator(operator.getitem)
+def _(x, idx):
+    assert fx_is_tensor(x)
+    sh = fx_shape(x)
+    assert len(idx) == len(sh)
+    outsh = list(sh)
+    for n, i in enumerate(idx):
+        if isinstance(i, slice):
+            if i.start == None and i.stop == None:
+                outsh[n] = sh[n]
+            else:
+                raise NotImplementedError("!")
+        elif isinstance(i, int):
+            outsh[n] = -1
+        else:
+            raise NotImplementedError("!")
+
+    outsh = [i for i in outsh if i != -1]
+
+    return AbstractTensor(torch.Size(outsh), x.dtype)
+
+
+#####
+##### Modules
+#####
+
+from fx_shnty import shnty_propagator, fx_shape, fx_is_tensor, AbstractTensor
+
+
+@shnty_propagator(torch.nn.Dropout)
+@shnty_propagator(torch.nn.LayerNorm)
+def _(mod, arg):
+    return AbstractTensor(fx_shape(arg), arg.dtype)
+
+
+@shnty_propagator(torch.nn.TransformerEncoder)
+def _(mod, arg):
+    return AbstractTensor(fx_shape(arg), arg.dtype)
+
+
+@shnty_propagator(torch.nn.Embedding)
+def _(mod, arg):
+    assert fx_is_tensor(arg)
+    assert arg.dtype == torch.int64
+    sh = fx_shape(arg)
+    sh = torch.Size((*sh, mod.embedding_dim))
+    print(
+        "Warning: shnty_propagator(torch.nn.modules.sparse.Embedding): assuming float32"
+    )
+    return AbstractTensor(sh, torch.float32)
+
+
+@shnty_propagator(torch.nn.Linear)
+def _(mod, arg):
+    assert fx_is_tensor(arg)
+    assert mod.in_features == arg.shape[-1]
+    sh = torch.Size((*arg.shape[:-1], mod.out_features))
+    return AbstractTensor(sh, arg.dtype)
+
+
+@shnty_propagator(torch.nn.ReLU)
+def _(mod, arg):
+    return arg

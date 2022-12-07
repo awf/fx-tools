@@ -45,6 +45,9 @@ def fx_print_node(node, gm=None, name2ord=None):
     if node.op == "call_method":
         return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){comment}"
 
+    if node.op == "call_module":
+        return f"{lhs} = {node.target}({_commajoin(argstrs)}){comment}"
+
     if node.op == "get_attr":
         assert len(argstrs) == 0
         if gm:
@@ -54,7 +57,9 @@ def fx_print_node(node, gm=None, name2ord=None):
             valstr = "pass gm for value"
         return f"{lhs} = {node.target} # {valstr}"
 
-    return f"# unhandled {node.op} {argstr(node)} = {node.target}({_commajoin(argstrs)}){comment}"
+    return (
+        f"# unhandled {node.op} {lhs} = {node.target}({_commajoin(argstrs)}){comment}"
+    )
 
 
 def fx_print(gm):

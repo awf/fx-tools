@@ -14,7 +14,7 @@ def shape2str(sh: torch.Size):
 
 
 def type2str(ty):
-    return ty.__name__ if isinstance(ty, Type) else str(ty)
+    return ty.__qualname__ if isinstance(ty, Type) else str(ty)
 
 
 # --------------
@@ -35,6 +35,9 @@ class AbstractValue:
 
     def __repr__(self):
         return str(self)
+
+    def __instancecheck__(self, ty):
+        return isinstance(self.ty, ty)
 
     @property
     def isTensor(self) -> bool:
@@ -114,21 +117,18 @@ _shnty_propagator_dict: Dict[
 ] = {}
 
 
-def shnty_propagator_register(op, propagator):
-    """shnty_propagator_register(op, propagator):
-    Register PROPAGATOR as tbe peopagtor for OP.
-
-    See `shnty_propagator`
-    """
-    assert op not in _shnty_propagator_dict
-    _shnty_propagator_dict[op] = propagator
+def _canonicalize_class(x):
+    if x.__class__ == torch.Tensor.__class__:
+        return torch.Tensor  # not _TensorBase
+    else:
+        return x.__class__
 
 
 def _classname(x):
     if x.__class__ == torch.Tensor.__class__:
         return "torch.Tensor"  # not _TensorBase
     else:
-        return x.__qualname___
+        return x.__qualname__
 
 
 def _opspec_to_str(opspec):
@@ -139,12 +139,27 @@ def _opspec_to_str(opspec):
         ty, attr = opspec
         assert isinstance(ty, Type)
         assert isinstance(attr, str)
-        return f"method `{type2str(ty)}.{attr}`"
+        return f"method `{fn_name(ty)}.{attr}`"
 
     if isinstance(opspec, GetSetDescriptorType):
         return f"attr `{_classname(opspec.__objclass__)}.{opspec.__name__}`"
 
     assert False
+
+
+def shnty_propagator_register(op, propagator):
+    """shnty_propagator_register(op, propagator):
+    Register PROPAGATOR as tbe peopagtor for OP.
+
+    See `shnty_propagator`
+    """
+    if isinstance(op, MethodDescriptorType):
+        op = (_canonicalize_class(op.__objclass__), op.__name__)
+
+    if op in _shnty_propagator_dict:
+        raise RuntimeError(f"Shnty op {_opspec_to_str(op)} already registered")
+    print(f"register shnty op {_opspec_to_str(op)}")
+    _shnty_propagator_dict[op] = propagator
 
 
 def shnty_propagator(opspec):
@@ -219,6 +234,9 @@ class AbstractValueProxy(tfx.Proxy):
         # e.g. a thing which has a ".node_" field...
         self.abval_node_ = node
 
+    def __str__(self):
+        return f"AbValProxy[{self.abval_node_.meta[self.TAG]}]"
+
     @property
     def shape(self):
         return self.abval_node_.meta[self.TAG].shape
@@ -278,7 +296,7 @@ def justone(iter):
     return val[0]
 
 
-_log = lambda x: ...
+_log = lambda *args, **kwargs: ...
 _log = print
 
 
@@ -287,20 +305,22 @@ class AbstractValueTracer(tfx.Tracer):
         super().__init__()
         self.aargs_used = 0
         self.aargs = aargs
+        self.called_modules = {}
 
     def proxy(self, node):
-        _log(f"shnty_trace -- {fx_print_node(node)}")
+        _log(f"shnty_trace -- {fx_print_node(node)}", end="...")
         if node.op == "placeholder":
             if self.aargs_used >= len(self.aargs):
                 raise ValueError("Not enough aargs passed to shnty_trace")
             abval = self.aargs[self.aargs_used]
             self.aargs_used += 1
+            _log(f"{abval}")
             if isinstance(abval, AbstractValue):
                 return AbstractValueProxy(node, self, abval)
             else:
                 return abval
 
-        if node.op in ("call_function", "call_method"):
+        if node.op in ("call_function", "call_method", "call_module"):
             # Get arg shntys
             aargs_or_vals = tuple(
                 fx_get_abstract_value_or_value(self._inline_const(x)) for x in node.args
@@ -325,20 +345,41 @@ class AbstractValueTracer(tfx.Tracer):
                     key = node.target
             elif node.op == "call_method":
                 key = (ty0, node.target)
+            elif node.op == "call_module":
+                m = self.called_modules[node.target]
+                key = type(m)
+                aargs_or_vals = (m,) + aargs_or_vals
             else:
                 assert False
 
             if key not in _shnty_propagator_dict:
                 msg = f"Need to implement `shnty_propagate` for {_opspec_to_str(key)}"
-                print(msg)
+                _log(f" error: {msg} ({node.args})")
                 raise NotImplementedError(msg)
 
             # Call the propagator
             abval = _shnty_propagator_dict[key](*aargs_or_vals)
             assert_shnty_ok(f"shnty_propagate[{_opspec_to_str(key)}]", abval)
+            _log(f"{abval}")
             return AbstractValueProxy(node, self, abval)
 
+        _log(" error:")
         raise NotImplementedError(f"AbstractValueTracer proxy for {node.op}")
+
+    def call_module(
+        self,
+        m: torch.nn.Module,
+        forward: Callable[..., Any],
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> Any:
+        """ """
+        # TODO: Register shape propagators for modules , rather than just tracing right through
+        module_qualified_name = self.path_of_module(m)
+        if not self.is_leaf_module(m, module_qualified_name):
+            return forward(*args, **kwargs)
+        self.called_modules[module_qualified_name] = m
+        return self.create_proxy("call_module", module_qualified_name, args, kwargs)
 
     def _inline_const(self, arg):
         if isinstance(arg, tfx.Node) and arg.op == "get_attr":
@@ -366,10 +407,11 @@ def shnty_trace(func, aargs):
 
 
     """
-    _log(f"shnty_trace {aargs}")
+    name = func.__name__ if isinstance(func, FunctionType) else func.__class__.__name__
+    _log(f"shnty_trace {name} at {aargs}")
     shnty_tracer = AbstractValueTracer(aargs)
     graph = shnty_tracer.trace(func)
-    return tfx.GraphModule(shnty_tracer.root, graph, func.__name__)
+    return tfx.GraphModule(shnty_tracer.root, graph, name)
 
 
 def get_return_abstract_value(gm: tfx.GraphModule):
