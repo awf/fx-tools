@@ -282,7 +282,7 @@ class AbstractValueProxy(tfx.Proxy):
     def __torch_function__(cls, orig_method, types, args=None, kwargs=None):
         # disp thru som
         if orig_method == torch.nn.functional.multi_head_attention_forward:
-            with torch.overrides._no_torch_function_mode():
+            with torch._C.DisableTorchFunction():
                 return orig_method(*args, **kwargs)
 
         return super().__torch_function__(orig_method, types, args, kwargs)
