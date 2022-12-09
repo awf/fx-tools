@@ -30,7 +30,7 @@ def fx_print_node(node, gm=None, name2ord=None):
         return str(a) + f"[{type(a)}]"
 
     argstrs = [argstr(a) for a in node.args]
-    comment = f" # {node.meta['shnty']}" if "shnty" in node.meta else " # nosh"
+    comment = f" # {(str(k) + ':' + str(v) for k,v in node.meta.items())}"
 
     if node.op == "output":
         return f"return {argstrs[0]}{comment}"
@@ -51,11 +51,14 @@ def fx_print_node(node, gm=None, name2ord=None):
     if node.op == "get_attr":
         assert len(argstrs) == 0
         if gm:
-            val = getattr(gm, node.target)
-            valstr = str(val).replace("\n", "\\n")[:40]
+            if hasattr(gm, node.target):
+                val = getattr(gm, node.target)
+                valstr = str(val).replace("\n", "\\n")[:40]
+            else:
+                valstr = f"no attr {node.target}"
         else:
-            valstr = "pass gm for value"
-        return f"{lhs} = {node.target} # {valstr}"
+            valstr = "[no GM]"
+        return f"{lhs} = getattr({node.target}, {node.args}) # {valstr}"
 
     return (
         f"# unhandled {node.op} {lhs} = {node.target}({_commajoin(argstrs)}){comment}"

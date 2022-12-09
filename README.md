@@ -4,9 +4,11 @@
 
 Main point of interest is probably the AD pass in https://github.com/awf/fx-tools/blob/main/DiffFX_Experiments.ipynb
 
+https://discuss.pytorch.org/t/torch-fx-vs-torch-jit-script/100299/3
 
 
 - unlike shapeprop - don't actually run the calcullations
+https://pytorch.org/docs/stable/fx.html#the-interpreter-pattern
     - good for memory/time
     - good because shnty_propagator explicitly knows if it's OK to propagate
 

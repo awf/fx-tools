@@ -26,6 +26,9 @@ class AbstractValue:
     For a large number of operations, the type of the output
     can be determined as a function of its inputs, using propagators
     defined using `shnty_propagator`
+
+    The term 'Abstract', although heavily overloaded in computer science, comes
+    from abstract interpretation (see https://en.wikipedia.org/wiki/Abstract_interpretation).
     """
 
     ty: Type
@@ -64,13 +67,20 @@ class AbstractTensor(AbstractValue):
 
     shape: torch.Size
     dtype: torch.dtype
+    is_nested: bool
 
+    # Implenemt all tensor methods that can be implemented using only shape and dtype
+    def dim(self):
+        return len(self.shape)
+
+    # Housekeeping for AbstractValue
     def __init__(self, shape, dtype):
         super().__init__(torch.Tensor)
         assert isinstance(shape, torch.Size)
         assert isinstance(dtype, torch.dtype)
         self.shape = shape
         self.dtype = dtype
+        self.is_nested = False
 
     def __str__(self):
         return f"abval:Tensor[({shape2str(self.shape)}),{type2str(self.dtype)}]"
@@ -158,7 +168,7 @@ def shnty_propagator_register(op, propagator):
 
     if op in _shnty_propagator_dict:
         raise RuntimeError(f"Shnty op {_opspec_to_str(op)} already registered")
-    print(f"register shnty op {_opspec_to_str(op)}")
+
     _shnty_propagator_dict[op] = propagator
 
 
@@ -222,35 +232,65 @@ def shnty_propagator(opspec):
 
 
 # ================= Use AbstractValue in FX tracing ================
+_AVP_TAG = "$abval"
+
+
 class AbstractValueProxy(tfx.Proxy):
-    TAG = "abstract_value"
+    # TODO: Be careful about namespace pollution here - a Proxy could be anything
+    # e.g. a thing which has a ".node_" field...
 
     def __init__(self, node, tracer, abval):
         super().__init__(node, tracer)
-        assert self.TAG not in node.meta
-        node.meta[self.TAG] = abval
+        assert _AVP_TAG not in node.meta
+        node.meta[_AVP_TAG] = abval
 
-        # TODO: Be careful about namespace pollution here - a Proxy could be anything
-        # e.g. a thing which has a ".node_" field...
-        self.abval_node_ = node
+        self._abval_node = node
 
     def __str__(self):
-        return f"AbValProxy[{self.abval_node_.meta[self.TAG]}]"
+        return f"AbValProxy[{self._abval_node.meta[_AVP_TAG]}]"
 
-    @property
-    def shape(self):
-        return self.abval_node_.meta[self.TAG].shape
+    def __getattr__(self, attr):
+        # Forward to abval
+        if hasattr(self._abval_node.meta[_AVP_TAG], attr):
+            return getattr(self._abval_node.meta[_AVP_TAG], attr)
+        return torch.fx.proxy.Attribute(self, attr)
+
+    # See ParameterProxy for alternative list of forwarding methods:
+    # The problem with this list is that it strongly assumes the proxy is for
+    # a tensor
+    # @property
+    # def shape(self):
+    #     return self.param.shape
+
+    # def size(self):
+    #     return self.param.size()
+
+    # def dim(self):
+    #     return self.param.dim()
+
+    # @property
+    # def ndim(self):
+    #     return self.param.ndim
+
+    # def numel(self):
+    #     return self.param.numel()
+
+    # def nelement(self):
+    #     return self.param.nelement()
+
+    def __instancecheck__(self, ty):
+        return isinstance(self.ty, ty)
 
 
 def fx_get_abstract_value_or_value(x):
     if isinstance(x, tfx.Node):
-        if AbstractValueProxy.TAG not in x.meta:
+        if _AVP_TAG not in x.meta:
             print(x.graph)
             raise RuntimeError(f"This node {x} is not from a shnty_trace?")
-        return x.meta[AbstractValueProxy.TAG]
+        return x.meta[_AVP_TAG]
 
     if isinstance(x, tfx.Proxy):
-        return fx_get_abstract_value_or_value(x.abval_node_)
+        return fx_get_abstract_value_or_value(x._abval_node)
 
     # It's not an FX object.
     return x
@@ -302,13 +342,13 @@ _log = print
 
 class AbstractValueTracer(tfx.Tracer):
     def __init__(self, aargs):
-        super().__init__()
+        super().__init__()  # TODO: param_shapes_constant?
         self.aargs_used = 0
         self.aargs = aargs
         self.called_modules = {}
 
     def proxy(self, node):
-        _log(f"shnty_trace -- {fx_print_node(node)}", end="...")
+        _log(f"shnty_trace -- {fx_print_node(node, _AVP_TAG)}", end="...")
         if node.op == "placeholder":
             if self.aargs_used >= len(self.aargs):
                 raise ValueError("Not enough aargs passed to shnty_trace")
@@ -363,7 +403,12 @@ class AbstractValueTracer(tfx.Tracer):
             _log(f"{abval}")
             return AbstractValueProxy(node, self, abval)
 
-        _log(" error:")
+        if node.op == "get_attr":
+            # This None will be filled in in getattr below
+            _log(" made proxy")
+            return AbstractValueProxy(node, self, None)
+
+        _log(" error!")
         raise NotImplementedError(f"AbstractValueTracer proxy for {node.op}")
 
     def call_module(
@@ -378,18 +423,51 @@ class AbstractValueTracer(tfx.Tracer):
         module_qualified_name = self.path_of_module(m)
         if not self.is_leaf_module(m, module_qualified_name):
             return forward(*args, **kwargs)
+        # Stash the module and pass on to FX implementation
         self.called_modules[module_qualified_name] = m
         return self.create_proxy("call_module", module_qualified_name, args, kwargs)
 
-    def _inline_const(self, arg):
-        if isinstance(arg, tfx.Node) and arg.op == "get_attr":
-            return justone(k for (k, v) in self.tensor_attrs.items() if v == arg.target)
-        else:
-            return arg
+    def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
+        # Call super, get a proxy if appropriate
+        ret = super().getattr(attr, attr_val, parameter_proxy_cache)
 
-    # def getattr(self, attr: str, attr_val: Any, parameter_proxy_cache: Dict[str, Any]):
-    #     ic(attr, attr_val)
-    #     return super().getattr(attr, attr_val, parameter_proxy_cache)
+        # Attach attr_val to the returned proxy
+        if isinstance(ret, AbstractValueProxy):
+            abval = abstractify(attr_val)
+            ret.node.meta[_AVP_TAG] = abval
+
+        # print(
+        #     f">>getattr {attr} {type(attr_val)} -> "
+        #     + f"{'V' if ret is attr_val else 'P'} {type(ret)}"
+        # )
+
+        return ret
+
+    def is_leaf_module(self, m: torch.nn.Module, module_qualified_name: str) -> bool:
+        return False  # Trace through everything
+
+    def _inline_const(self, arg):
+        if (
+            isinstance(arg, tfx.Node)
+            and arg.op == "get_attr"
+            and _AVP_TAG not in arg.meta
+        ):
+
+            if len(arg.args) != 0:
+                raise NotImplementedError("OI")
+
+            matches_in_tensor_attrs = [
+                k for (k, v) in self.tensor_attrs.items() if v == arg.target
+            ]
+            if len(matches_in_tensor_attrs) == 1:
+                return matches_in_tensor_attrs[0]
+
+            if len(matches_in_tensor_attrs) > 1:
+                raise RuntimeError("oiks?")
+
+            print(f"where is {arg.target}")
+
+        return arg
 
 
 def shnty_trace(func, aargs):

@@ -8,7 +8,7 @@ from torchtext.functional import to_tensor
 print("loading")
 xlmr_large = torchtext.models.XLMR_LARGE_ENCODER
 classifier_head = torchtext.models.RobertaClassificationHead(
-    num_classes=2, input_dim=1024
+    num_classes=7, input_dim=1024
 )
 print("get_model")
 model = xlmr_large.get_model(head=classifier_head, load_weights=False)
@@ -27,15 +27,20 @@ print("input")
 model_input = to_tensor(transform(input_batch), padding_value=1)
 
 print("run")
-output = model(model_input)
-print(output.shape)
+print(model(model_input))
 
 import torch.fx
 
-# model_gm = torch.fx.symbolic_trace(model)
-# "symbolically traced variables cannot be used as inputs to control flow"
+if False:
+    # "symbolically traced variables cannot be used as inputs to control flow"
+    model_gm = torch.fx.symbolic_trace(model)
 
-from fx_shnty import shnty_trace, abstractify, fx_get_abstract_value_or_value
+from fx_shnty import (
+    shnty_trace,
+    abstractify,
+    fx_get_abstract_value_or_value,
+    AbstractTensor,
+)
 from fx_print import fx_print
 
 # TODO: get this monkey off our patch
@@ -48,11 +53,22 @@ if True:
     torch.jit._isinstance = shnty_isinstance
     # end monkey
 
-model_gm = shnty_trace(model, (abstractify(model_input), None))
 
-model_gm.print_readable()
+# jt = torch.jit.trace(model, (model_input, None))
+
+model_gm = shnty_trace(model, (abstractify(model_input), None))
+model_gm.recompile()
 
 fx_print(model_gm)
+
+print(model_gm(model_input))
+
+
+m2 = shnty_trace(
+    model.encoder.transformer.token_embedding,
+    (AbstractTensor(torch.Size((2, 13)), torch.int64, False),),
+)
+fx_print(m2)
 
 exit(0)
 

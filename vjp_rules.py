@@ -14,6 +14,12 @@ from difffx import (
 # Define a bunch of manual vjps
 # Ultimately parse these out of https://github.com/pytorch/pytorch/blob/master/tools/autograd/derivatives.yaml
 
+# Reminder: for
+#  def foo(x : S) -> T
+# we define
+#  def foo_fwd(x : S) -> (T, Aux_foo)
+#  def foo_bwd(aux : Aux_foo, dret : dT) -> dS
+
 
 def check_op(op, *args):
     fwd, bwd = _ad_map[op]
@@ -143,14 +149,14 @@ def _(A, B):
     shape = torch.broadcast_shapes(A_shape, B_shape)
     assert ret.shape == shape
 
-    expanderA = shape_to_expander(shape, A_shape)
-    expanderB = shape_to_expander(shape, B_shape)
-    return ret, (A_shape, B_shape, expanderA, expanderB)
+    return ret, (A_shape, B_shape, shape)
 
 
 @vjp_rule_bwd(operator.add)
 def _(aux, dret):
-    A_shape, B_shape, expanderA, expanderB = aux
+    A_shape, B_shape, shape = aux
+    expanderA = shape_to_expander(shape, A_shape)
+    expanderB = shape_to_expander(shape, B_shape)
     dA = contract_over_expanded_dims(dret, expanderA)
     dB = contract_over_expanded_dims(dret, expanderB)
     # Reshapes are to canonicalize e.g. Size([]) vs Size([1])
@@ -272,6 +278,23 @@ def _(aux_is_x, dret):
 
 def test_sin():
     check_op(torch.sin, *(torch.randn(3, 4),))
+
+
+if False:
+    # Demonstration of how to implement an alternative definition of sin, optimized for time.
+    sin_Ot = lambda x: torch.sin(x)
+
+    @vjp_rule_fwd(sin_Ot)
+    def _(x):
+        s, c = torch.sincos(x)
+        return (s, c)
+
+    @vjp_rule_bwd(sin_Ot)
+    def _(c, dret):
+        return c * dret
+
+    def test_sin_Ot():
+        check_op(sin_Ot, *(torch.randn(3, 4),))
 
 
 # Atan2

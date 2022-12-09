@@ -1,6 +1,7 @@
 import operator
 import numpy
 import torch
+from typing import List, Optional, Tuple
 
 from fx_shnty import (
     AbstractValue,
@@ -216,21 +217,79 @@ def _(mod, arg):
     return AbstractTensor(fx_shape(arg), arg.dtype)
 
 
+@shnty_propagator(torch.nn.functional.layer_norm)
+def layer_norm(
+    input: AbstractTensor,
+    normalized_shape: List[int],
+    weight: Optional[AbstractTensor] = None,
+    bias: Optional[AbstractTensor] = None,
+    eps: float = 1e-5,
+) -> AbstractTensor:
+    assert not weight and not bias
+    return input
+
+
+@shnty_propagator(torch.nn.functional.dropout)
+def _(
+    input: AbstractTensor, p: float = 0.5, training: bool = True, inplace: bool = False
+) -> AbstractTensor:
+    return input
+
+
 @shnty_propagator(torch.nn.TransformerEncoder)
 def _(mod, arg):
     return AbstractTensor(fx_shape(arg), arg.dtype)
 
 
 @shnty_propagator(torch.nn.Embedding)
-def _(mod, arg):
-    assert fx_is_tensor(arg)
-    assert arg.dtype == torch.int64
-    sh = fx_shape(arg)
-    sh = torch.Size((*sh, mod.embedding_dim))
+def _(module, input):
+    assert fx_is_tensor(input)
+    assert input.dtype == torch.int64
+    sh = fx_shape(input)
+    sh = torch.Size((*sh, module.embedding_dim))
     print(
         "Warning: shnty_propagator(torch.nn.modules.sparse.Embedding): assuming float32"
     )
     return AbstractTensor(sh, torch.float32)
+
+
+@shnty_propagator(torch.nn.functional.embedding)
+def _(input, weight):
+    assert fx_is_tensor(weight)
+    assert fx_is_tensor(input)
+    assert input.dtype == torch.int64
+    sh = fx_shape(input)
+    sh = torch.Size((*sh, weight.shape[1]))
+    return AbstractTensor(sh, weight.dtype)
+
+
+# @shnty_propagator(torch.nn.functional.multi_head_attention_forward)
+# def _(
+#     query: AbstractTensor,
+#     key: AbstractTensor,
+#     value: AbstractTensor,
+#     embed_dim_to_check: int,
+#     num_heads: int,
+#     in_proj_weight: Optional[AbstractTensor],
+#     in_proj_bias: Optional[AbstractTensor],
+#     bias_k: Optional[AbstractTensor],
+#     bias_v: Optional[AbstractTensor],
+#     add_zero_attn: bool,
+#     dropout_p: float,
+#     out_proj_weight: AbstractTensor,
+#     out_proj_bias: Optional[AbstractTensor],
+#     training: bool = True,
+#     key_padding_mask: Optional[AbstractTensor] = None,
+#     need_weights: bool = True,
+#     attn_mask: Optional[AbstractTensor] = None,
+#     use_separate_proj_weight: bool = False,
+#     q_proj_weight: Optional[AbstractTensor] = None,
+#     k_proj_weight: Optional[AbstractTensor] = None,
+#     v_proj_weight: Optional[AbstractTensor] = None,
+#     static_k: Optional[AbstractTensor] = None,
+#     static_v: Optional[AbstractTensor] = None,
+#     average_attn_weights: bool = True,
+# ) -> Tuple[AbstractTensor, Optional[AbstractTensor]]:
 
 
 @shnty_propagator(torch.nn.Linear)
