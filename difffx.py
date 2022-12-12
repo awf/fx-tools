@@ -70,11 +70,11 @@ def vjp(f, sample_input):
     if not any([isinstance(a, AbstractValue) for a in sample_input]):
         raise ValueError("sample input should contain at least one abstract value")
 
-    if len(sample_input) > 1:
-        raise ValueError("Annoyingly, vjp doesn't work for multiple inputs")
-        # Problem is that the interpreter below can't sensibly deal with *args
-        # A Solution: rewrite the top level of `trace` (called by shnty_trace)
-        # to not use co_argcount, but to use the length of the supplied args.
+    # if len(sample_input) > 1:
+    #     raise ValueError("Annoyingly, vjp doesn't work for multiple inputs")
+    #     # Problem is that the interpreter below can't sensibly deal with *args
+    #     # A Solution: rewrite the top level of `trace` (called by shnty_trace)
+    #     # to not use co_argcount, but to use the length of the supplied args.
 
     class ADInterpreter(torch.fx.Interpreter):
         """
@@ -88,7 +88,7 @@ def vjp(f, sample_input):
             self.stack = []
 
         def call_function(self, target, args, kwargs):
-            assert kwargs == None or len(kwargs) == 0
+            # Assume kwargs are not to be differentiated
 
             # translate getattrs
             if target == getattr:
@@ -116,7 +116,7 @@ def vjp(f, sample_input):
             fwd, bwd = _ad_map[target]
 
             # Call the fwd function, getting proxies for returns
-            val, aux = fwd(*args)
+            val, aux = fwd(*args, **kwargs)
 
             # In the backward pass, we will compute:
             #  d[args[0]],...,d[args[-1]] = bwd(aux, d{val})
@@ -130,8 +130,8 @@ def vjp(f, sample_input):
             key = (fx_type(args[0]), target)
             return self.call_function(key, args, kwargs)
 
-        def get_attr(self, target, args, kwargs):
-            raise NotImplementedError  # TODO
+        # def get_attr(self, target, args, kwargs):
+        #     raise NotImplementedError  # TODO
 
     # Grab the FX graph
     f_trace = shnty_trace(f, sample_input)

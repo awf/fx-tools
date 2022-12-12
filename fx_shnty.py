@@ -2,7 +2,7 @@ from types import FunctionType, MethodDescriptorType, GetSetDescriptorType
 from typing import Tuple, Type, Callable, Dict, Union, Any
 from dataclasses import dataclass
 from icecream import ic
-
+import numpy
 import torch
 import torch.fx as tfx
 
@@ -72,6 +72,22 @@ class AbstractTensor(AbstractValue):
     # Implenemt all tensor methods that can be implemented using only shape and dtype
     def dim(self):
         return len(self.shape)
+
+    def size(self, dim=None):
+        if dim:
+            return self.shape[dim]
+        else:
+            return self.shape
+
+    @property
+    def ndim(self):
+        return self.dim()
+
+    def numel(self):
+        return numpy.prod(self.shape)
+
+    def nelement(self):
+        return self.numel()
 
     # Housekeeping for AbstractValue
     def __init__(self, shape, dtype):
@@ -280,10 +296,10 @@ class AbstractValueProxy(tfx.Proxy):
 
     @classmethod
     def __torch_function__(cls, orig_method, types, args=None, kwargs=None):
-        # disp thru som
-        if orig_method == torch.nn.functional.multi_head_attention_forward:
-            with torch._C.DisableTorchFunction():
-                return orig_method(*args, **kwargs)
+        # # Dispatch through some known modules
+        # if orig_method == torch.nn.functional.multi_head_attention_forward:
+        #     torch.overrides.has_torch_function_skips += 1
+        #     return orig_method(*args, **kwargs)
 
         return super().__torch_function__(orig_method, types, args, kwargs)
 
@@ -411,8 +427,9 @@ class AbstractValueTracer(tfx.Tracer):
 
         if node.op == "get_attr":
             # This None will be filled in in getattr below
+            abval = None
             _log(" made proxy")
-            return AbstractValueProxy(node, self, None)
+            return AbstractValueProxy(node, self, abval)
 
         _log(" error!")
         raise NotImplementedError(f"AbstractValueTracer proxy for {node.op}")
@@ -425,7 +442,6 @@ class AbstractValueTracer(tfx.Tracer):
         kwargs: Dict[str, Any],
     ) -> Any:
         """ """
-        # TODO: Register shape propagators for modules , rather than just tracing right through
         module_qualified_name = self.path_of_module(m)
         if not self.is_leaf_module(m, module_qualified_name):
             return forward(*args, **kwargs)
@@ -440,17 +456,13 @@ class AbstractValueTracer(tfx.Tracer):
         # Attach attr_val to the returned proxy
         if isinstance(ret, AbstractValueProxy):
             abval = abstractify(attr_val)
+            print(f'Attaching to {attr}: {abval}')
             ret.node.meta[_AVP_TAG] = abval
-
-        # print(
-        #     f">>getattr {attr} {type(attr_val)} -> "
-        #     + f"{'V' if ret is attr_val else 'P'} {type(ret)}"
-        # )
 
         return ret
 
     def is_leaf_module(self, m: torch.nn.Module, module_qualified_name: str) -> bool:
-        return False  # Trace through everything
+        return super().is_leaf_module(m, module_qualified_name)
 
     def _inline_const(self, arg):
         if (
