@@ -16,7 +16,9 @@ def fn_name(f):
     return n
 
 
-def fx_print_node(node, gm=None, name2ord=None):
+def fx_print_node(
+    node, gm=None, name2ord=None, ignore={"creation_timestamp", "stack_trace"}
+):
     def argstr(a):
         if isinstance(a, tuple):
             return "(" + _commajoin(map(argstr, a)) + ")"
@@ -29,8 +31,28 @@ def fx_print_node(node, gm=None, name2ord=None):
 
         return str(a) + f"[{type(a)}]"
 
+    def prshape(s: torch.Size):
+      return 'x'.join(str(s) for s in s)
+
+    print_meta_handlers = {
+        # tensor_meta:TensorMetadata(shape=torch.Size([2, 32]), dtype=torch.float32, requires_grad=False, stride=(32, 1), memory_format=torch.contiguous_format, is_quantized=False, qparams={})
+        "tensor_meta": (lambda tm: f"Tensor[{prshape(tm.shape)}, {tm.dtype}]")
+    }
+
     argstrs = [argstr(a) for a in node.args]
-    comment = f" # {','.join(str(k) + ':' + str(v) for k,v in node.meta.items())}"
+    meta_strs = ",".join(
+        [
+            print_meta_handlers[k](v)
+            for k, v in node.meta.items()
+            if k in print_meta_handlers
+        ]
+        + [
+            str(k) + ":" + str(v)
+            for k, v in node.meta.items()
+            if k not in ignore and k not in print_meta_handlers
+        ]
+    )
+    comment = f" # {meta_strs}"
 
     if node.op == "output":
         return f"return {argstrs[0]}{comment}"
