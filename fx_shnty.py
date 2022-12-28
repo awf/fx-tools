@@ -363,10 +363,11 @@ _log = print
 
 
 class AbstractValueTracer(tfx.Tracer):
-    def __init__(self, aargs):
+    def __init__(self, aargs, kwargs):
         super().__init__()  # TODO: param_shapes_constant?
         self.aargs_used = 0
         self.aargs = aargs
+        self.kwargs = kwargs
         self.called_modules = {}
 
     def proxy(self, node):
@@ -456,7 +457,7 @@ class AbstractValueTracer(tfx.Tracer):
         # Attach attr_val to the returned proxy
         if isinstance(ret, AbstractValueProxy):
             abval = abstractify(attr_val)
-            print(f'Attaching to {attr}: {abval}')
+            print(f'Attaching getattr abval to {attr}: {abval}')
             ret.node.meta[_AVP_TAG] = abval
 
         return ret
@@ -488,7 +489,7 @@ class AbstractValueTracer(tfx.Tracer):
         return arg
 
 
-def shnty_trace(func, aargs):
+def shnty_trace(func, aargs, kwargs={}):
     """
     Perform a symboic trace of callable FUNC, at the given arguments
     Where arguments are AbstractValues, the trace will propagate their shapes
@@ -505,7 +506,7 @@ def shnty_trace(func, aargs):
     """
     name = func.__name__ if isinstance(func, FunctionType) else func.__class__.__name__
     _log(f"shnty_trace {name} at {aargs}")
-    shnty_tracer = AbstractValueTracer(aargs)
+    shnty_tracer = AbstractValueTracer(aargs, kwargs)
     graph = shnty_tracer.trace(func)
     return tfx.GraphModule(shnty_tracer.root, graph, name)
 
