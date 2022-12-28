@@ -1,3 +1,4 @@
+import operator
 import re
 import torch
 
@@ -31,8 +32,8 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             return name2ord[a.name] if name2ord else a.name
         if isinstance(a, (float,)):
             return f"{type(a).__name__}({a})"
-        if isinstance(a, int):
-            return f"{a}"
+        if isinstance(a, (int, torch.dtype)):
+            return f"{repr(a)}"
         if isinstance(a, str):
             return f"'{a}'"
 
@@ -78,7 +79,11 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
         return f"{lhs} = {node.target}{comment}"
 
     if node.op == "call_function":
-        return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
+        if node.target == operator.getitem:
+          # Silly sugar for getitem, but it's nicer to read...
+          return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{comment}"
+        else:
+          return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
 
     if node.op == "call_method":
         return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){comment}"
