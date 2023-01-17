@@ -1,6 +1,7 @@
 import operator
 import re
 import torch
+import types
 
 
 def _commajoin(vs):
@@ -10,37 +11,59 @@ def _commajoin(vs):
 def fn_name(f):
     n = f.__name__
     if hasattr(f, "__module__") and f.__module__ != "_operator":
-        if f.__module__ == 'torch._ops.aten':
-          n = f"aten.{n}"
+        if f.__module__ == "torch._ops.aten":
+            n = f"aten.{n}"
         else:
-          n = f"{f.__module__}.{n}"
+            n = f"{f.__module__}.{n}"
 
-    if hasattr(f, "__code__"):
-        n += f"[{f.__code__.co_filename}:{f.__code__.co_firstlineno}]"
+    # if hasattr(f, "__code__"):
+    #     n += f"[{f.__code__.co_filename}:{f.__code__.co_firstlineno}]"
 
     return n
 
+
 _default_ignore = {"creation_timestamp", "stack_trace"}
 
+
 def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
+    def namestr(a):
+        return name2ord[a.name] if name2ord else a.name
     def argstr(a):
         if isinstance(a, tuple):
             return "(" + _commajoin(map(argstr, a)) + ")"
         if isinstance(a, (list, torch.fx.immutable_collections.immutable_list)):
             return "[" + _commajoin(map(argstr, a)) + "]"
         if isinstance(a, torch.fx.Node):
-            return name2ord[a.name] if name2ord else a.name
+            # Peek to see if it's a scalar constant
+            if (
+                a.op == "get_attr"
+                and len(a.args) == 0
+                and gm
+                and hasattr(gm, a.target)
+            ):
+                val = getattr(gm, a.target)
+                if val.shape == ():
+                    return f"{val}"
+
+            return namestr(a)
         if isinstance(a, (float,)):
             return f"{type(a).__name__}({a})"
-        if isinstance(a, (int, torch.dtype)):
-            return f"{repr(a)}"
         if isinstance(a, str):
             return f"'{a}'"
 
-        return f"{type(a)}{repr(a)}"
+        # explicit list of types for which 'repr' is appropriate
+        if isinstance(a, (int, torch.dtype, types.NoneType)):
+            return repr(a)
+
+        # a type we haven't seen before: print as <class 'T'>val
+        # fxpn is greppable for those who would like to improve the printing
+        return f"fxpn{type(a)}{repr(a)}"
 
     def prshape(s: torch.Size):
-        return "x".join(str(s) for s in s)
+        if len(s) == 0:
+          return "()"
+        else:
+          return "x".join(str(s) for s in s)
 
     def value_str(v):
         vstr = str(v)
@@ -69,21 +92,25 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             if k not in ignore and k not in print_meta_handlers
         ]
     )
-    comment = f" # {meta_strs}" if len(meta_strs) > 0 else ''
+    comment = f" # {meta_strs}" if len(meta_strs) > 0 else ""
 
     if node.op == "output":
         return f"return {argstrs[0]}{comment}"
 
-    lhs = argstr(node)
+    lhs = namestr(node)
     if node.op == "placeholder":
         return f"{lhs} = {node.target}{comment}"
 
     if node.op == "call_function":
         if node.target == operator.getitem:
-          # Silly sugar for getitem, but it's nicer to read...
-          return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{comment}"
+            # Silly sugar for getitem, but it's nicer to read...
+            return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{comment}"
         else:
-          return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
+            if hasattr(node.target, "__code__"):
+              comment += f" # [{node.target.__code__.co_filename}:{node.target.__code__.co_firstlineno}]"
+
+
+            return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
 
     if node.op == "call_method":
         return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){comment}"
@@ -100,8 +127,10 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             else:
                 valstr = f"no attr {node.target}"
 
-            assert node.args == ()
-            return f"{lhs} = self.{node.target} # {valstr}"
+            if val.size() == ():
+                return f"# {lhs} = {val}"
+            else:
+                return f"{lhs} = self.{node.target} # {valstr}"
 
         return f"{lhs} = getattr({node.target}, {node.args})"
 
@@ -119,12 +148,17 @@ def fx_print_iter(gm, ignore=_default_ignore):
     name = torch.nn.Module._get_name(gm)
     yield f"def {name}({_commajoin(args)}):"
 
+    for (m,val) in gm.named_modules():
+        if m != '':
+          yield f"  {m} = {val.__module__}.{val}"
+
     for node in gm.graph.nodes:
         assert node.name not in name2ord
         name2ord[node.name] = f"v{ord}"
         ord += 1
 
         yield "  " + fx_print_node(node, gm, name2ord, ignore)
+
 
 def fx_print(gm, ignore=_default_ignore):
 
@@ -157,7 +191,7 @@ def test_fx_print():
 
     aux_gm = torch.compile(aux, backend=compiler_fn)
 
-    aux_gm(torch.rand(3, 3, device='meta'), torch.rand(3,3, device='meta'))
+    aux_gm(torch.rand(3, 3, device="meta"), torch.rand(3, 3, device="meta"))
 
     # Pass on the compiler_fn to the aot_function API
     my_func_gm = torch.compile(my_func, backend=compiler_fn)
