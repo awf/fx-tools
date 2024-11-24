@@ -1,12 +1,13 @@
 from types import FunctionType, MethodDescriptorType, GetSetDescriptorType
 from typing import Tuple, Type, Callable, Dict, Union, Any
 from dataclasses import dataclass
-from icecream import ic
+
 import numpy
 import torch
 import torch.fx as tfx
 
 from fx_print import fx_print_node, fn_name
+
 
 # --------------
 def shape2str(sh: torch.Size):
@@ -457,7 +458,7 @@ class AbstractValueTracer(tfx.Tracer):
         # Attach attr_val to the returned proxy
         if isinstance(ret, AbstractValueProxy):
             abval = abstractify(attr_val)
-            print(f'Attaching getattr abval to {attr}: {abval}')
+            print(f"Attaching getattr abval to {attr}: {abval}")
             ret.node.meta[_AVP_TAG] = abval
 
         return ret

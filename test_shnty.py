@@ -3,8 +3,6 @@ import pytest
 import operator
 import torch
 
-from icecream import ic
-
 from fx_print import fx_print
 
 from fx_shnty import (

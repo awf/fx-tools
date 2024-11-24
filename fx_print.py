@@ -3,6 +3,10 @@ import re
 import torch
 import types
 
+from colorama import Fore, Back, Style
+
+from awfutils import ndarray_str
+
 
 def _commajoin(vs):
     return ",".join(vs)
@@ -22,7 +26,7 @@ def fn_name(f):
     return n
 
 
-_default_ignore = {"creation_timestamp", "stack_trace"}
+_default_ignore = {"creation_timestamp", "stack_trace", "type", "original_node"}
 
 
 def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
@@ -62,17 +66,22 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             return "x".join(str(s) for s in s)
 
     def value_str(v):
-        vstr = str(v)
-        vstr = re.sub(r"\s*\n\s*", r"\\n ", vstr)
-        if len(vstr) > 40:
-            vstr = vstr[:30] + "<...>" + vstr[-10:]
         if isinstance(v, torch.Tensor):
-            vstr = f"Tensor[{prshape(v.shape)}, {v.dtype}]({vstr})"
-        return vstr
+            return ndarray_str(v.numpy())  # TODO: optimize for super-large tensors
+        return str(v)
+
+    def print_tensor_meta(tm):
+        if isinstance(tm, torch.fx.passes.shape_prop.TensorMetadata):
+            return f"Tensor[{prshape(tm.shape)}, {tm.dtype}]"
+        if isinstance(tm, tuple):
+            return "(" + ",".join(print_tensor_meta(t) for t in tm) + ")"
+
+        raise ValueError(f"Unknown tensor meta {tm}")
 
     print_meta_handlers = {
         # tensor_meta:TensorMetadata(shape=torch.Size([2, 32]), dtype=torch.float32, requires_grad=False, stride=(32, 1), memory_format=torch.contiguous_format, is_quantized=False, qparams={})
-        "tensor_meta": (lambda tm: f"Tensor[{prshape(tm.shape)}, {tm.dtype}]")
+        "tensor_meta": print_tensor_meta,
+        # "type": lambda v: v.__name__ if v not in (torch.Tensor, tuple) else "type",
     }
 
     argstrs = [argstr(a) for a in node.args]
@@ -88,30 +97,36 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             if k not in ignore and k not in print_meta_handlers
         ]
     )
-    comment = f" # {meta_strs}" if len(meta_strs) > 0 else ""
+    comment = f"{meta_strs}" if len(meta_strs) > 0 else ""
+
+    def com():
+        if comment:
+            return Fore.GREEN + " # " + comment + Style.RESET_ALL
+        else:
+            return ""
 
     if node.op == "output":
-        return f"return {argstrs[0]}{comment}"
+        return f"return {argstrs[0]}{com()}"
 
     lhs = namestr(node)
     if node.op == "placeholder":
-        return f"{lhs} = {node.target}{comment}"
+        return f"{lhs} = {node.target}{com()}"
 
     if node.op == "call_function":
         if node.target == operator.getitem:
             # Silly sugar for getitem, but it's nicer to read...
-            return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{comment}"
+            return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{com()}"
         else:
             if hasattr(node.target, "__code__"):
-                comment += f" # [{node.target.__code__.co_filename}:{node.target.__code__.co_firstlineno}]"
+                comment += f"[{node.target.__code__.co_filename}:{node.target.__code__.co_firstlineno}]"
 
-            return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){comment}"
+            return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){com()}"
 
     if node.op == "call_method":
-        return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){comment}"
+        return f"{lhs} = {argstrs[0]}.{node.target}({_commajoin(argstrs[1:])}){com()}"
 
     if node.op == "call_module":
-        return f"{lhs} = {node.target}({_commajoin(argstrs)}){comment}"
+        return f"{lhs} = {node.target}({_commajoin(argstrs)}){com()}"
 
     if node.op == "get_attr":
         assert len(argstrs) == 0
@@ -125,13 +140,12 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             if val.size() == ():
                 return f"# {lhs} = {val}"
             else:
-                return f"{lhs} = self.{node.target} # {valstr}"
+                comment += valstr
+                return f"{lhs} = self.{node.target}{com()}"
 
         return f"{lhs} = getattr({node.target}, {node.args})"
 
-    return (
-        f"# unhandled {node.op} {lhs} = {node.target}({_commajoin(argstrs)}){comment}"
-    )
+    return f"# unhandled {node.op} {lhs} = {node.target}({_commajoin(argstrs)}){com()}"
 
 
 def fx_print_iter(gm, ignore=_default_ignore):
@@ -143,7 +157,7 @@ def fx_print_iter(gm, ignore=_default_ignore):
     name = torch.nn.Module._get_name(gm)
     yield f"def {name}({_commajoin(args)}):"
 
-    for (m, val) in gm.named_modules():
+    for m, val in gm.named_modules():
         if m != "":
             yield f"  {m} = {val.__module__}.{val}"
 

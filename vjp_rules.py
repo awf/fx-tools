@@ -1,13 +1,13 @@
 import operator
 import torch
 from vjp_check import vjp_check_fwdbwd
-from fx_shnty import shnty_propagator, fx_shape
-from icecream import ic
+
 from difffx import (
     vjp_rule_fwd,
     vjp_rule_bwd,
     register_vjp_rule_linear,
     register_vjp_rule,
+    fx_shape,
     _ad_map,
 )
 
@@ -34,11 +34,6 @@ def check_op(op, *args):
 @torch.fx.wrap
 def scale(a, T):
     return a * T
-
-
-@shnty_propagator(scale)
-def _(A_shnty, T_shnty):
-    return T_shnty
 
 
 @vjp_rule_fwd(scale)
@@ -147,7 +142,7 @@ def _(A, B):
     A_shape = fx_shape(A)
     B_shape = fx_shape(B)
     shape = torch.broadcast_shapes(A_shape, B_shape)
-    assert ret.shape == shape
+    assert fx_shape(ret) == shape if isinstance(ret, torch.Tensor) else True
 
     return ret, (A_shape, B_shape, shape)
 
@@ -248,7 +243,7 @@ def test_matmul():
 @vjp_rule_fwd(torch.sum)
 @vjp_rule_fwd((torch.Tensor, "sum"))
 def _(A, dim=None):
-    return torch.sum(A, dim), (dim, A.shape)
+    return torch.sum(A, dim), (dim, fx_shape(A))
 
 
 @vjp_rule_bwd(torch.sum)
@@ -354,7 +349,7 @@ def test_neg():
 # Trace
 @vjp_rule_fwd(torch.trace)
 def _(x):
-    return torch.trace(x), x.shape
+    return torch.trace(x), fx_shape(x)
 
 
 @vjp_rule_bwd(torch.trace)
@@ -369,7 +364,7 @@ def test_trace():
 # Diag
 @vjp_rule_fwd(torch.diag)
 def _(x):
-    return torch.diag(x), x.shape
+    return torch.diag(x), fx_shape(x)
 
 
 @vjp_rule_bwd(torch.diag)

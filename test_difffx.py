@@ -1,10 +1,11 @@
 import pytest
 import torch
-from awfutils.pytree_utils import PyTree
+from awfutils.pytree_utils import PyTree, pt_map
+from awfutils import ndarray_str
 import difffx as dfx
 import vjp_rules
-from fx_shnty import shnty_trace
 from fx_print import fx_print
+
 
 # Functions to vjp
 def foo(x):
@@ -24,7 +25,7 @@ def my_func(x):
     for _ in range(2):  # Loops will be unrolled
         x = aux(x, y)  # Function calls will be inlined
     t = b * y
-    t = t * torch.sum(t)
+    t = t * torch.sum(t) + x
     t = t / torch.sum(t)
     tTt = t.T @ t
     x = x @ tTt
@@ -38,13 +39,15 @@ def test_difffx(func, size):
 
     x = torch.randn(*size)
     func(x)  # crash test
-    fx_print(shnty_trace(func, (dfx.abstractify(x),)))
-
-    foo_vjp = dfx.vjp(func, (dfx.abstractify(x),))
-    fx_print(foo_vjp)
+    # fx_print(shnty_trace(func, (dfx.abstractify(x),)))
 
     dret = torch.randn_like(func(x))
     foo_vjp_pt = lambda x, dret: torch.autograd.functional.vjp(func, x, dret)
+
+    foo_vjp = dfx.vjp(func, x)
+    fx_print(foo_vjp)
+
+    print(*pt_map(lambda x: ndarray_str(x.numpy()), foo_vjp(x, dret)), sep="\n")
 
     PyTree.assert_close(foo_vjp_pt(x, dret), foo_vjp(x, dret))
     print("VJPs match OK")

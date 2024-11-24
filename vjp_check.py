@@ -17,7 +17,7 @@ def vjp_check(f, f_vjp, x, verbose=False):
     print("VJP OK:", f)
 
 
-def vjp_check_fwdbwd(f, f_fwd, f_bwd, x):
+def vjp_check_fwdbwd(f, f_fwd, f_bwd, args):
     """
     Check that manually-defined VJP pair f_fwd, f_bwd matches torch's AD
        ret_given,aux = f_fwd(x)
@@ -27,17 +27,17 @@ def vjp_check_fwdbwd(f, f_fwd, f_bwd, x):
        ret_torch,vjp_torch = torch.autograd.functional.vjp(f, x, dret)
 
     """
-    ret_given, aux = f_fwd(*x)
+    ret_given, aux = f_fwd(*args)
     dret = pt_rand_like(ret_given)
     vjp_given = f_bwd(aux, dret)
 
-    assert isinstance(x, tuple)
-    x = tuple(torch.tensor(a) if isinstance(a, float) else a for a in x)
+    assert isinstance(args, tuple)
+    args = tuple(torch.tensor(a) if isinstance(a, float) else a for a in args)
 
-    if isinstance(x, tuple) and len(x) == 1:
-        x_for_torch = x[0]
+    if isinstance(args, tuple) and len(args) == 1:
+        x_for_torch = args[0]
     else:
-        x_for_torch = x
+        x_for_torch = args
     ret_torch, vjp_torch = torch.autograd.functional.vjp(f, x_for_torch, dret)
 
     PyTree.assert_close(ret_given, ret_torch)

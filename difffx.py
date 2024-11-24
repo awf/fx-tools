@@ -1,27 +1,98 @@
 from types import GetSetDescriptorType
+from typing import Any, Callable, Type
+
 from collections import defaultdict
+
+import numpy as np
 import torch
 
-from icecream import ic
-
 import torch.fx as tfx
+import torch.fx.passes
 
 from fx_print import fx_print, fn_name
-from fx_shnty import (
-    abstractify,  # for re-export
-    AbstractValue,
-    shnty_trace,
-    get_return_abstract_value,
-    fx_type,
-    fx_shape,
-    _opspec_to_str,
-)
 
 
 def ensure_tuple(x):
     if isinstance(x, tuple):
         return x
     return (x,)
+
+
+class AnnotatingInterpreter(torch.fx.Interpreter):
+    """
+    An FX Interpreter that attaches the original FX node to proxies.
+
+    This allows annotations left by previous passes to be picked up, for example shapes
+    """
+
+    def run_node(self, n):
+        val = super().run_node(n)
+        val.node.meta["original_node"] = n  # Attach node to val
+        return val
+
+
+def fx_add_shapes(f_trace: torch.fx.GraphModule, sample_input: Any):
+    """
+    Run shape propagation on graph `f_trace`, which will add shape metadata in place.
+    """
+    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(*sample_input)
+
+
+def fx_type(x):
+    if isinstance(x, torch.fx.Proxy):
+        if "original_node" not in x.node.meta:
+            raise ValueError(f"Node {x.node} has no shape metadata")
+        onode = x.node.meta["original_node"]
+        return onode.meta["type"]
+
+    raise ValueError(f"Unhandled  {x}")
+
+
+def fx_shape(x):
+    """
+    Return the shape of tensor or FX Proxy x.  Using `fx_shape` instead of `x.shape`
+    means that the shape can be extracted from Proxies as well as Tensors.
+
+    Assumes that ShapeProp has been run on the graph, so that x.fsi_node is set
+    """
+    if isinstance(x, torch.fx.Proxy):
+        if "original_node" not in x.node.meta:
+            raise ValueError(f"Node {x.node} has no shape metadata")
+        onode = x.node.meta["original_node"]
+        return onode.meta["tensor_meta"].shape
+    elif isinstance(x, torch.Tensor):
+        return x.shape
+    elif np.issubdtype(type(x), np.number):
+        return ()  # Compatible with torch.broadcast_shapes
+    else:
+        raise ValueError(f"Unhandled type {type(x)}")
+
+
+def _canonicalize_class(x):
+    if x.__class__ == torch.Tensor.__class__:
+        return torch.Tensor  # not _TensorBase
+    else:
+        return x.__class__
+
+
+def _classname(x):
+    return _canonicalize_class(x).__qualname__
+
+
+def _opspec_to_str(opspec):
+    if isinstance(opspec, Callable):
+        return f"function `{fn_name(opspec)}`"
+
+    if isinstance(opspec, tuple):
+        ty, attr = opspec
+        assert isinstance(ty, Type)
+        assert isinstance(attr, str)
+        return f"method `{fn_name(ty)}.{attr}`"
+
+    if isinstance(opspec, GetSetDescriptorType):
+        return f"attr `{_classname(opspec.__objclass__)}.{opspec.__name__}`"
+
+    assert False
 
 
 # ----------------
@@ -64,19 +135,7 @@ def vjp(f, sample_input):
     ```
     """
 
-    # Check that sample inputs are tuples, and that at least one is an AbstractValue
-    if not isinstance(sample_input, tuple):
-        raise ValueError("sample input should be a tuple of [abstract] values")
-    if not any([isinstance(a, AbstractValue) for a in sample_input]):
-        raise ValueError("sample input should contain at least one abstract value")
-
-    # if len(sample_input) > 1:
-    #     raise ValueError("Annoyingly, vjp doesn't work for multiple inputs")
-    #     # Problem is that the interpreter below can't sensibly deal with *args
-    #     # A Solution: rewrite the top level of `trace` (called by shnty_trace)
-    #     # to not use co_argcount, but to use the length of the supplied args.
-
-    class ADInterpreter(torch.fx.Interpreter):
+    class ADInterpreter(AnnotatingInterpreter):
         """
         This interpreter runs through the forward transformation,
         replacing calls to `fk` with `fk_fwd = ad_map[fk][0]`,
@@ -127,19 +186,17 @@ def vjp(f, sample_input):
             return val
 
         def call_method(self, target, args, kwargs):
-            key = (fx_type(args[0]), target)
+            key = (fx_type(args[0]), target)  # assumes all nodes are torch.Tensor
             return self.call_function(key, args, kwargs)
 
-        # def get_attr(self, target, args, kwargs):
-        #     raise NotImplementedError  # TODO
+        def get_attr(self, target, args, kwargs):
+            raise NotImplementedError  # TODO
 
     # Grab the FX graph
-    f_trace = shnty_trace(f, sample_input)
+    f_trace = torch.fx.symbolic_trace(f)
 
-    fx_print(f_trace)
-
-    # Get abstract return value
-    ret_shnty = get_return_abstract_value(f_trace)
+    # Run shape analysis, record answers in the graph
+    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(sample_input)
 
     # This is the "template" function for the VJP
     def vjp_template(x, dret):
@@ -147,30 +204,19 @@ def vjp(f, sample_input):
         ad = ADInterpreter(f_trace)
         ret = ad.run(x)
         # Build a dict to hold derivatives
-        d = {}
+        d = defaultdict(lambda: 0)
         # Add dret to derivatives dict
         d[ret] = dret
         # And run down the stack...
-        for (args, bwd, aux, val) in reversed(ad.stack):
-            dval = d[val] if val in d else torch.zeros(fx_shape(val))
-            dargs = bwd(aux, dval)
-            for (a, da) in zip(args, ensure_tuple(dargs)):
-                if fx_shape(a) != fx_shape(da):
-                    raise ValueError(
-                        f"Derivative has different shape from arg: "
-                        + f"{fx_shape(da)} != {fx_shape(a)}, "
-                        + f"in {fn_name(bwd)}"
-                    )
-                if a in d:
-                    d[a] = d[a] + da
-                else:
-                    d[a] = da
+        for args, bwd, aux, val in reversed(ad.stack):
+            dargs = bwd(aux, d[val])
+            for a, da in zip(args, ensure_tuple(dargs)):
+                d[a] += da
         # And return ret and J'*dret
         return ret, d[x]
 
-    vjp_args = sample_input + (ret_shnty,)
-
-    return shnty_trace(vjp_template, vjp_args)
+    # Trace through vjp_template and return.
+    return torch.fx.symbolic_trace(vjp_template)
 
 
 def register_vjp_rule(opspec, fwd, bwd):
@@ -239,6 +285,3 @@ def vjp_rule_bwd(opspec):
         return func  # normally just gets assigned to '_'
 
     return the_decorator
-
-
-import vjp_rules
