@@ -8,6 +8,14 @@ import torch.fx as tfx
 
 from fx_print import fx_print_node, fn_name
 
+######################################################################
+
+## FX Shnty: Shape and Type propagation in FX
+
+# This module provides a way to propagate shapes and types through FX,
+# just as in ShapeProp, but probably less comprehensively....
+# TODO: check if any advantage of this remains
+
 
 # --------------
 def shape2str(sh: torch.Size):

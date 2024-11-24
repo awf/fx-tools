@@ -260,6 +260,21 @@ def test_sum():
     check_op(torch.sum, *(torch.randn(3, 4),))
 
 
+# Cos
+@vjp_rule_fwd(torch.cos)
+def _(x):
+    return (torch.cos(x), x)
+
+
+@vjp_rule_bwd(torch.cos)
+def _(aux_is_x, dret):
+    return -torch.sin(aux_is_x) * dret
+
+
+def test_cos():
+    check_op(torch.cos, *(torch.randn(3, 4),))
+
+
 # Sin
 @vjp_rule_fwd(torch.sin)
 def _(x):
