@@ -6,7 +6,7 @@ import numpy
 import torch
 import torch.fx as tfx
 
-from fx_print import fx_print_node, fn_name
+from .fx_print import fx_print_node, fn_name
 
 ######################################################################
 
@@ -328,7 +328,7 @@ def fx_get_abstract_value_or_value(x):
 
 
 # Shape
-def fx_shape(a):
+def fx_shnty_shape(a):
     """
     Get shape of an object which might be a torch Tensor, or an AbstractTensor,
     or a scalar.
@@ -341,7 +341,7 @@ def fx_shape(a):
 
 
 # Shape
-def fx_type(a):
+def fx_shnty_type(a):
     """
     Get shape of an object which might be an AbstractValue
     """
@@ -397,7 +397,7 @@ class AbstractValueTracer(tfx.Tracer):
             aargs_or_vals = tuple(
                 fx_get_abstract_value_or_value(self._inline_const(x)) for x in node.args
             )
-            ty0 = fx_type(aargs_or_vals[0])
+            ty0 = fx_shnty_type(aargs_or_vals[0])
 
             # Make lookup key
             if node.op == "call_function":
@@ -531,6 +531,3 @@ def get_return_abstract_value(gm: tfx.GraphModule):
     for n in reversed(gm.graph.nodes):
         assert n.op == "output"
         return fx_get_abstract_value_or_value(n.args[0])
-
-
-import fx_shnty_propagators

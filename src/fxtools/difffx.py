@@ -9,7 +9,7 @@ import torch
 import torch.fx as tfx
 import torch.fx.passes
 
-from fx_print import fx_print, fn_name
+from .fx_print import fx_print, fn_name
 
 
 def ensure_tuple(x):

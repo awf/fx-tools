@@ -3,15 +3,15 @@ import numpy
 import torch
 from typing import List, Optional, Tuple
 
-from fx_shnty import (
+from .fx_shnty import (
     AbstractValue,
     AbstractTensor,
-    fx_shape,
-    fx_type,
+    fx_shnty_shape,
     fx_is_tensor,
     shnty_propagator,
     shnty_propagator_register,
 )
+
 
 # --------------  Broadcasting ops (e.g. add, mul, sin..)
 
@@ -23,7 +23,7 @@ def shnty_propagate_broadcast_aux(op, dty, *args):
     """
     msg = f"shnty_propagate_broadcast_aux {op}"
 
-    shapes = [fx_shape(a) for a in args]
+    shapes = [fx_shnty_shape(a) for a in args]
     sh = torch.broadcast_shapes(*shapes)
 
     # Type
@@ -176,7 +176,7 @@ def _(x, dim=None):
 @shnty_propagator(torch.Tensor.cumsum)
 def _(x, dim=None):
     assert fx_is_tensor(x)
-    return AbstractTensor(fx_shape(x), x.dtype)
+    return AbstractTensor(fx_shnty_shape(x), x.dtype)
 
 
 # --------------  getitem
@@ -185,7 +185,7 @@ def _(x, dim=None):
 @shnty_propagator(operator.getitem)
 def _(x, idx):
     assert fx_is_tensor(x)
-    sh = fx_shape(x)
+    sh = fx_shnty_shape(x)
     assert len(idx) == len(sh)
     outsh = list(sh)
     for n, i in enumerate(idx):
@@ -208,13 +208,11 @@ def _(x, idx):
 ##### Modules
 #####
 
-from fx_shnty import shnty_propagator, fx_shape, fx_is_tensor, AbstractTensor
-
 
 @shnty_propagator(torch.nn.Dropout)
 @shnty_propagator(torch.nn.LayerNorm)
 def _(mod, arg):
-    return AbstractTensor(fx_shape(arg), arg.dtype)
+    return AbstractTensor(fx_shnty_shape(arg), arg.dtype)
 
 
 @shnty_propagator(torch.nn.functional.layer_norm)
@@ -238,14 +236,14 @@ def _(
 
 @shnty_propagator(torch.nn.TransformerEncoder)
 def _(mod, arg):
-    return AbstractTensor(fx_shape(arg), arg.dtype)
+    return AbstractTensor(fx_shnty_shape(arg), arg.dtype)
 
 
 @shnty_propagator(torch.nn.Embedding)
 def _(module, input):
     assert fx_is_tensor(input)
     assert input.dtype == torch.int64
-    sh = fx_shape(input)
+    sh = fx_shnty_shape(input)
     sh = torch.Size((*sh, module.embedding_dim))
     print(
         "Warning: shnty_propagator(torch.nn.modules.sparse.Embedding): assuming float32"
@@ -258,7 +256,7 @@ def _(input, weight):
     assert fx_is_tensor(weight)
     assert fx_is_tensor(input)
     assert input.dtype == torch.int64
-    sh = fx_shape(input)
+    sh = fx_shnty_shape(input)
     sh = torch.Size((*sh, weight.shape[1]))
     return AbstractTensor(sh, weight.dtype)
 

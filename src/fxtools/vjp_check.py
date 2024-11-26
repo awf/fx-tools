@@ -65,6 +65,12 @@ def test_vjp_check():
 
 # Test that the check fails for a bad vjp
 def test_vjp_check_bad():
+    def foo(a, T):
+        return a * T, torch.sin(a)
+
+    def foo_vjp_fwd(a, T):
+        return foo(a, T), (a, T)
+
     def foo_vjp_bwd_bad(aux, dret):
         a, T = aux
         da = torch.sum(T * dret[0])

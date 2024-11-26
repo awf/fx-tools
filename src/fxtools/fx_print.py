@@ -5,25 +5,11 @@ import types
 
 from colorama import Fore, Back, Style
 
-from awfutils import ndarray_str
+from awfutils import ndarray_str, fn_name
 
 
 def _commajoin(vs):
     return ",".join(vs)
-
-
-def fn_name(f):
-    n = f.__name__
-    if hasattr(f, "__module__") and f.__module__ != "_operator":
-        if f.__module__ == "torch._ops.aten":
-            n = f"aten.{n}"
-        else:
-            n = f"{f.__module__}.{n}"
-
-    # if hasattr(f, "__code__"):
-    #     n += f"[{f.__code__.co_filename}:{f.__code__.co_firstlineno}]"
-
-    return n
 
 
 _default_ignore = {"creation_timestamp", "stack_trace", "type", "original_node"}
@@ -117,8 +103,10 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
             # Silly sugar for getitem, but it's nicer to read...
             return f"{lhs} = {argstrs[0]}[{_commajoin(argstrs[1:])}]{com()}"
         else:
-            if hasattr(node.target, "__code__"):
-                comment += f"[{node.target.__code__.co_filename}:{node.target.__code__.co_firstlineno}]"
+            # Find a repeatable way to do this in the case where code may be coming from
+            # temporary files, e.g. ipykernel
+            # if hasattr(node.target, "__code__"):
+            #     comment += f"[{node.target.__code__.co_filename}:{node.target.__code__.co_firstlineno}]"
 
             return f"{lhs} = {fn_name(node.target)}({_commajoin(argstrs)}){com()}"
 

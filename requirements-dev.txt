@@ -1,1 +1,11 @@
+# Requirements for tests
 pytest
+nbval
+torch
+
+# Requirements for development
+pre-commit
+black
+mypy
+black[jupyter]
+isort

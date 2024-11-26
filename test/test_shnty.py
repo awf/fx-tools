@@ -3,16 +3,17 @@ import pytest
 import operator
 import torch
 
-from fx_print import fx_print
+from fxtools import fx_print
 
-from fx_shnty import (
+from fxtools.fx_shnty import (
     abstractify,
-    fx_shape,
-    fx_type,
+    fx_shnty_shape,
+    fx_shnty_type,
     get_return_abstract_value,
     shnty_trace,
     _shnty_propagator_dict,
 )
+import fxtools.fx_shnty_propagators
 
 
 def _args(*args, **kwargs):
@@ -60,7 +61,7 @@ def test_op(op_id, all_args):
 
     if isinstance(op_id, str):
         # Method call
-        ty = fx_type(args[0])
+        ty = fx_shnty_type(args[0])
         op = getattr(args[0], op_id)
         val = op(*args[1:], **kwargs)
         shntys = map(abstractify, args)
@@ -180,7 +181,7 @@ def test_shnty_shape_passing():
 
     # Test tensor constants
     def foo_c(x):
-        I = torch.eye(fx_shape(x)[1])
+        I = torch.eye(fx_shnty_shape(x)[1])
         return x @ I @ x.T
 
     ret = foo_c(x)
@@ -196,8 +197,8 @@ def test_shnty_shape_passing():
 
 def test_shnty_concrete_vs_abstract():
 
-    from fx_shnty import shnty_trace, abstractify
-    from fx_print import fx_print
+    from fxtools.fx_shnty import shnty_trace, abstractify
+    from fxtools import fx_print
 
     def aux(p, q):
         return torch.relu(1.234 * p * q).neg()

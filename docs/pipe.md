@@ -1,3 +1,6 @@
+## Pipelining, in code
+
+```py
 wup,todevice,declare_stream,host,ipu0,ipu1,send,recv,A,B,C,D,E,F = foo()
 
 # A -> B -> C --> D-\
@@ -116,3 +119,4 @@ def f_ipu1():
     b1  = recv('b01')         # EXCH
     send(d1, 'd10')           #
     l1 = l1_next
+```

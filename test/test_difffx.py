@@ -2,9 +2,7 @@ import pytest
 import torch
 from awfutils.pytree_utils import PyTree, pt_map
 from awfutils import ndarray_str
-import difffx as dfx
-import vjp_rules
-from fx_print import fx_print
+from fxtools import fx_print, fx_vjp
 
 
 # Functions to vjp
@@ -44,7 +42,7 @@ def test_difffx(func, size):
     dret = torch.randn_like(func(x))
     foo_vjp_pt = lambda x, dret: torch.autograd.functional.vjp(func, x, dret)
 
-    foo_vjp = dfx.vjp(func, x)
+    foo_vjp = fx_vjp(func, x)
     fx_print(foo_vjp)
 
     print(*pt_map(lambda x: ndarray_str(x.numpy()), foo_vjp(x, dret)), sep="\n")

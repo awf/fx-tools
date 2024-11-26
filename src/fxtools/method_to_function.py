@@ -1,5 +1,5 @@
 import torch
-from fx_shnty import fx_type, _opspec_to_str
+from fxtools import fx_type, fn_name
 
 method_to_function_dict = {
     (torch.Tensor, "neg"): torch.neg,
@@ -13,7 +13,7 @@ def method_to_function(mod: torch.fx.GraphModule):
         if n.op == "call_method":
             key = (fx_type(n.args[0]), n.target)
             if key not in method_to_function_dict:
-                print(f"Can't find {_opspec_to_str(key)} in method_to_function_dict")
+                print(f"Can't find {fn_name(key)} in method_to_function_dict")
                 continue
             translation = method_to_function_dict[key]
             # create IR to call new activate

@@ -1,8 +1,8 @@
 import operator
 import torch
-from vjp_check import vjp_check_fwdbwd
+from .vjp_check import vjp_check_fwdbwd
 
-from difffx import (
+from .difffx import (
     vjp_rule_fwd,
     vjp_rule_bwd,
     register_vjp_rule_linear,
@@ -423,3 +423,6 @@ def _(x, m, n):
 def _(aux, dret):
     m, n = aux
     return (torch.transpose(dret, m, n), None, None)
+
+def fx_force_registrations():
+    pass
