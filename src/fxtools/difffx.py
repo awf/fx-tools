@@ -250,7 +250,9 @@ def set_name(func, name):
 
 
 def vjp_rule_fwd(opspec):
-    """ """
+    """
+    The decorated function is the forward pass of the VJP rule for `opspec`.
+    """
 
     def the_decorator(func):
         if opspec in _ad_map:
@@ -269,7 +271,9 @@ def vjp_rule_fwd(opspec):
 
 
 def vjp_rule_bwd(opspec):
-    """ """
+    """
+    The decorated function is the backward pass of the VJP rule for `opspec`.
+    """
 
     def the_decorator(func):
         if opspec in _ad_map:

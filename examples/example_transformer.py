@@ -2,9 +2,7 @@ import torch
 import torch.nn as nn
 import torch.fx
 
-import torchtext
 from torchtext.models import RobertaClassificationHead
-from torchtext.functional import to_tensor
 
 from fx_shnty import (
     shnty_trace,
@@ -17,7 +15,7 @@ from fx_print import fx_print
 import difffx as dfx
 
 ab_input = AbstractTensor(torch.Size((2, 13, 1024)), torch.float32)
-ab_weights = AbstractTensor(torch.Size((250002,1024)),torch.float32)
+ab_weights = AbstractTensor(torch.Size((250002, 1024)), torch.float32)
 dfx.vjp(torch.nn.functional.embedding, (ab_input, ab_weights))
 
 
@@ -77,7 +75,10 @@ m2 = shnty_trace(
 fx_print(m2)
 
 
-dfx.vjp(model.encoder.transformer.token_embedding, (AbstractTensor(torch.Size((2, 13)), torch.int64), ))
+dfx.vjp(
+    model.encoder.transformer.token_embedding,
+    (AbstractTensor(torch.Size((2, 13)), torch.int64),),
+)
 
 
 exit(0)

@@ -1,13 +1,44 @@
-# pyproject.toml
+# Copyright (c) 2024 Graphcore Ltd. All rights reserved.
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ['fxtools']
+package-dir = {"" = "src"}
+
+[project]
+name =  "fxtools"
+version = "0.0.1"
+authors = [
+    {name = "Andrew Fitzgibbon", email = "awf@fitzgibbon.ie"},
+]
+description = "Some utilities for Torch FX"
+readme = "README.md"
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Development Status :: 3 - Alpha",
+]
+requires-python = ">=3.10"
+dynamic = ["dependencies", "optional-dependencies"]
+
+[tool.setuptools.dynamic]
+# version = {attr = "awfutils.VERSION"} # Wow: https://github.com/pypa/setuptools/issues/1724
+dependencies = {file = ["requirements.txt"]}
+optional-dependencies = {dev = {file = ["requirements-dev.txt"]}}
+
+[tool.black]
+line-length = 88
+fast = true
+
+[tool.mypy]
+[[tool.mypy.overrides]]
+module = "mx.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
-minversion = "6.0"
-# addopts = "-ra -q"
-testpaths = [
-    ".",
-]
-python_files = [
-    "vjp_rules.py",
-    "diffx.py",
-    "test_difffx.py",
-    "test_shnty.py"
-]
+addopts = "--nbval"
+testpaths = ["src", "docs", "test"]
