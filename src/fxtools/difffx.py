@@ -27,7 +27,7 @@ class AnnotatingInterpreter(torch.fx.Interpreter):
 
     def run_node(self, n):
         val = super().run_node(n)
-        val.node.meta["original_node"] = n  # Attach node to val
+        val.node.meta["dfx_orig_node"] = n  # Attach node to val
         return val
 
 
@@ -40,9 +40,9 @@ def fx_add_shapes(f_trace: torch.fx.GraphModule, sample_input: Any):
 
 def fx_type(x):
     if isinstance(x, torch.fx.Proxy):
-        if "original_node" not in x.node.meta:
+        if "dfx_orig_node" not in x.node.meta:
             raise ValueError(f"Node {x.node} has no shape metadata")
-        onode = x.node.meta["original_node"]
+        onode = x.node.meta["dfx_orig_node"]
         return onode.meta["type"]
 
     raise ValueError(f"Unhandled  {x}")
@@ -56,9 +56,9 @@ def fx_shape(x):
     Assumes that ShapeProp has been run on the graph, so that x.fsi_node is set
     """
     if isinstance(x, torch.fx.Proxy):
-        if "original_node" not in x.node.meta:
+        if "dfx_orig_node" not in x.node.meta:
             raise ValueError(f"Node {x.node} has no shape metadata")
-        onode = x.node.meta["original_node"]
+        onode = x.node.meta["dfx_orig_node"]
         return onode.meta["tensor_meta"].shape
     elif isinstance(x, torch.Tensor):
         return x.shape
@@ -106,8 +106,8 @@ def vjp(f, sample_input):
     """
     An FX transform that implements reverse-mode automatic differentiation.
 
-    >>>
-
+    The function `f` should take n tensor arguments, and return a single tensor
+    or a tuple of tensors.
 
     If the traced function is of the form
     ```py
@@ -196,13 +196,13 @@ def vjp(f, sample_input):
     f_trace = torch.fx.symbolic_trace(f)
 
     # Run shape analysis, record answers in the graph
-    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(sample_input)
+    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(*sample_input)
 
     # This is the "template" function for the VJP
-    def vjp_template(x, dret):
+    def vjp_template(x, y, dret):
         # Run the forward computations, and collect them in ad.stack
         ad = ADInterpreter(f_trace)
-        ret = ad.run(x)
+        ret = ad.run(x, y)
         # Build a dict to hold derivatives
         d = defaultdict(lambda: 0)
         # Add dret to derivatives dict
@@ -212,8 +212,8 @@ def vjp(f, sample_input):
             dargs = bwd(aux, d[val])
             for a, da in zip(args, ensure_tuple(dargs)):
                 d[a] += da
-        # And return ret and J'*dret
-        return ret, d[x]
+        # And return J'*dret
+        return (d[x], d[y])
 
     # Trace through vjp_template and return.
     return torch.fx.symbolic_trace(vjp_template)

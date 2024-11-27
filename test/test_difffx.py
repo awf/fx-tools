@@ -1,7 +1,7 @@
 import pytest
 import torch
 from awfutils.pytree_utils import PyTree, pt_map
-from awfutils import ndarray_str
+from awfutils import ndarray_str, pt_print
 from fxtools import fx_print, fx_vjp
 
 
@@ -48,6 +48,34 @@ def test_difffx(func, size):
     print(*pt_map(lambda x: ndarray_str(x.numpy()), foo_vjp(x, dret)), sep="\n")
 
     PyTree.assert_close(foo_vjp_pt(x, dret), foo_vjp(x, dret))
+    print("VJPs match OK")
+
+
+def test_multi():
+    def foo(x, y):
+        w = torch.trace(x) * y
+        # w = torch.sin(w)
+        a = w * x + x + y
+        return a
+
+    torch.manual_seed(42)
+
+    x = torch.randn(2, 3)
+    y = torch.randn(2, 3)
+    ret = foo(x, y)
+
+    dret = torch.randn_like(ret)
+    dxy_pt = torch.autograd.functional.vjp(foo, (x, y), dret)[1]
+    print()
+    pt_print("vjp_pt", dxy_pt)
+
+    foo_vjp = fx_vjp(foo, sample_input=(x, y))
+    fx_print(foo_vjp)
+
+    dxy = foo_vjp(x, y, dret)
+    pt_print("vjp", dxy)
+
+    PyTree.assert_close(dxy_pt, dxy)
     print("VJPs match OK")
 
 
