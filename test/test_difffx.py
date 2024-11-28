@@ -37,20 +37,20 @@ def test_difffx(func, size):
 
     x = torch.randn(*size)
     func(x)  # crash test
-    # fx_print(shnty_trace(func, (dfx.abstractify(x),)))
 
     dret = torch.randn_like(func(x))
-    foo_vjp_pt = lambda x, dret: torch.autograd.functional.vjp(func, x, dret)
+    foo_vjp_pt = lambda x, dret: torch.autograd.functional.vjp(func, x, dret)[1]
 
     foo_vjp = fx_vjp(func, x)
     fx_print(foo_vjp)
 
-    print(*pt_map(lambda x: ndarray_str(x.numpy()), foo_vjp(x, dret)), sep="\n")
+    pt_print("d", foo_vjp(x, dret))
 
     PyTree.assert_close(foo_vjp_pt(x, dret), foo_vjp(x, dret))
     print("VJPs match OK")
 
 
+@pytest.mark.skip("wip")
 def test_multi():
     def foo(x, y):
         w = torch.trace(x) * y

@@ -30,6 +30,24 @@ def check_op(op, *args):
         vjp_check_fwdbwd(op, fwd, bwd, args)
 
 
+# # getitem
+# @vjp_rule_fwd(operator.getitem)
+# def _(x, idx):
+#     return x[idx], (type(x), len(x), idx)
+
+
+# @vjp_rule_bwd(operator.getitem)
+# def _(aux, dret):
+#     ty, len_x, idx = aux
+#     return tuple(dret if i == idx else 0 for i in range(len_x))
+
+
+# # torch vjp can't handle tuple of tuples
+# def test_getitem():
+#     xs = tuple(map(torch.randn, (3, 4, 5)))
+#     check_op(operator.getitem, xs, 1)
+
+
 # SCALE
 @torch.fx.wrap
 def scale(a, T):
@@ -423,6 +441,7 @@ def _(x, m, n):
 def _(aux, dret):
     m, n = aux
     return (torch.transpose(dret, m, n), None, None)
+
 
 def fx_force_registrations():
     pass

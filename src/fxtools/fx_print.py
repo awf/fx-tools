@@ -5,14 +5,14 @@ import types
 
 from colorama import Fore, Back, Style
 
-from awfutils import ndarray_str, fn_name
+from awfutils import ndarray_str, fn_name, class_name
 
 
 def _commajoin(vs):
     return ",".join(vs)
 
 
-_default_ignore = {"creation_timestamp", "stack_trace", "type", "original_node"}
+_default_ignore = {"creation_timestamp", "stack_trace", "type"}
 
 
 def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
@@ -57,16 +57,26 @@ def fx_print_node(node, gm=None, name2ord=None, ignore=_default_ignore):
         return str(v)
 
     def print_tensor_meta(tm):
-        if isinstance(tm, torch.fx.passes.shape_prop.TensorMetadata):
-            return f"Tensor[{prshape(tm.shape)}, {tm.dtype}]"
+        ty2class = {
+            torch.fx.passes.shape_prop.TensorMetadata: "Tensor",
+            torch._subclasses.fake_tensor.FakeTensor: "FakeTensor",
+        }
+
+        if type(tm) in ty2class:
+            return f"{ty2class[type(tm)]}[{prshape(tm.shape)}, {tm.dtype}]"
+
         if isinstance(tm, tuple):
             return "(" + ",".join(print_tensor_meta(t) for t in tm) + ")"
 
-        raise ValueError(f"Unknown tensor meta {tm}")
+        if isinstance(tm, (torch.SymInt, torch.SymFloat)):
+            return f"{class_name(type(tm)).replace('torch.','')}({tm})"
+
+        raise ValueError(f"Unknown tensor meta {type(tm)}")
 
     print_meta_handlers = {
         # tensor_meta:TensorMetadata(shape=torch.Size([2, 32]), dtype=torch.float32, requires_grad=False, stride=(32, 1), memory_format=torch.contiguous_format, is_quantized=False, qparams={})
         "tensor_meta": print_tensor_meta,
+        "example_value": print_tensor_meta,
         # "type": lambda v: v.__name__ if v not in (torch.Tensor, tuple) else "type",
     }
 

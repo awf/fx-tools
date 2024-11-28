@@ -196,13 +196,15 @@ def vjp(f, sample_input):
     f_trace = torch.fx.symbolic_trace(f)
 
     # Run shape analysis, record answers in the graph
-    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(*sample_input)
+    torch.fx.passes.graph_manipulation.ShapeProp(f_trace).run(
+        *ensure_tuple(sample_input)
+    )
 
     # This is the "template" function for the VJP
-    def vjp_template(x, y, dret):
+    def vjp_template(x, dret):
         # Run the forward computations, and collect them in ad.stack
         ad = ADInterpreter(f_trace)
-        ret = ad.run(x, y)
+        ret = ad.run(x)
         # Build a dict to hold derivatives
         d = defaultdict(lambda: 0)
         # Add dret to derivatives dict
@@ -213,7 +215,7 @@ def vjp(f, sample_input):
             for a, da in zip(args, ensure_tuple(dargs)):
                 d[a] += da
         # And return J'*dret
-        return (d[x], d[y])
+        return d[x]
 
     # Trace through vjp_template and return.
     return torch.fx.symbolic_trace(vjp_template)
